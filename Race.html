@@ -1,0 +1,1619 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D P2P Web Racing</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0f172a;
+            font-family: 'Press Start 2P', cursive;
+            touch-action: none;
+            color: white;
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+
+        .panel {
+            pointer-events: auto;
+            background: rgba(15, 23, 42, 0.9);
+            border: 4px solid #3b82f6;
+            border-radius: 16px;
+            padding: 2rem;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.8);
+            text-align: center;
+            max-width: 90%;
+            backdrop-filter: blur(10px);
+        }
+
+        .btn {
+            background-color: #3b82f6;
+            color: white;
+            border: 4px solid #60a5fa;
+            padding: 12px 24px;
+            margin: 10px;
+            cursor: pointer;
+            border-radius: 8px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.9rem;
+            transition: all 0.1s;
+            text-transform: uppercase;
+        }
+
+        .btn:hover { background-color: #2563eb; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(59, 130, 246, 0.5); }
+        .btn:active { transform: translateY(2px); box-shadow: none; }
+        .btn:disabled { background-color: #475569; border-color: #64748b; cursor: not-allowed; color: #94a3b8; transform: none; box-shadow: none; }
+
+        .input-field {
+            background: rgba(0,0,0,0.5);
+            border: 2px solid #3b82f6;
+            color: white;
+            padding: 10px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.8rem;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            width: 100%;
+            box-sizing: border-box;
+            text-align: center;
+        }
+
+        .track-btn {
+            background-color: #10b981;
+            border-color: #34d399;
+            width: 60px;
+            height: 60px;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 1.2rem;
+        }
+
+        .track-btn.selected {
+            background-color: #ef4444;
+            border-color: #f87171;
+            transform: scale(1.1);
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.8);
+        }
+
+        .hidden { display: none !important; }
+
+        /* Mobile Controls */
+        #mobileControls {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            width: 100%;
+            padding: 0 20px;
+            box-sizing: border-box;
+            display: none;
+            justify-content: space-between;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .control-group { display: flex; gap: 10px; }
+
+        .d-pad, .action-btn {
+            pointer-events: auto;
+            background: rgba(255,255,255,0.1);
+            border: 2px solid rgba(255,255,255,0.3);
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 20px;
+            user-select: none;
+            backdrop-filter: blur(5px);
+            color: rgba(255,255,255,0.7);
+        }
+        .d-pad:active, .action-btn:active { background: rgba(255,255,255,0.3); }
+        .action-btn { background: rgba(239, 68, 68, 0.3); border-color: rgba(239, 68, 68, 0.5); }
+        .action-btn:active { background: rgba(239, 68, 68, 0.6); }
+
+        @media (max-width: 768px) {
+            #mobileControls { display: flex; }
+            .panel { padding: 1rem; width: 95%; }
+            h1 { font-size: 1.2rem; }
+            .btn { font-size: 0.7rem; padding: 10px 15px; }
+        }
+
+        /* 3D specific UI overlays */
+        #flashOverlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: white;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 15;
+            transition: opacity 0.5s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div id="flashOverlay"></div>
+    
+    <!-- Connection Menu -->
+    <div id="connectionUI" class="ui-layer">
+        <div class="panel">
+            <h1 class="text-3xl mb-2 text-blue-400" style="text-shadow: 2px 2px 0 #000;">3D KART</h1>
+            <p class="text-xs text-gray-400 mb-8">P2P MULTIPLAYER</p>
+            
+            <input type="text" id="playerNameInput" class="input-field" placeholder="NICKNAME" maxlength="8">
+            
+            <div class="flex flex-col gap-4 mt-6">
+                <button id="btnHost" class="btn" style="background-color: #f59e0b; border-color: #fbbf24;">HOST GAME</button>
+                
+                <div class="border-t border-gray-600 my-2 relative">
+                    <span class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-slate-900 px-2 text-xs text-gray-500">OR</span>
+                </div>
+
+                <input type="text" id="joinIdInput" class="input-field mb-0" placeholder="ENTER ROOM ID">
+                <button id="btnJoin" class="btn">JOIN GAME</button>
+            </div>
+            <p id="connectionStatus" class="text-xs text-yellow-400 mt-4 h-4"></p>
+        </div>
+    </div>
+
+    <!-- Lobby -->
+    <div id="lobbyUI" class="ui-layer hidden">
+        <div class="panel">
+            <h2 class="text-xl mb-2 text-blue-400">RACING LOBBY</h2>
+            <div class="mb-4 text-xs text-gray-300">
+                ROOM ID: <span id="displayRoomId" class="text-yellow-400 font-bold bg-black px-2 py-1 rounded select-all cursor-pointer"></span>
+            </div>
+            
+            <div id="playerList" class="text-xs mb-6 text-left bg-slate-800 p-4 rounded min-h-[100px] border border-gray-600">
+                <!-- Players injected here -->
+            </div>
+            
+            <div id="trackSelection" class="hidden mb-6">
+                <p class="text-yellow-400 mb-2 text-xs">SELECT TRACK (HOST/WINNER):</p>
+                <div class="flex flex-wrap justify-center gap-2 max-w-[350px]">
+                    <button class="btn track-btn" data-track="0">1</button>
+                    <button class="btn track-btn" data-track="1">2</button>
+                    <button class="btn track-btn" data-track="2">3</button>
+                    <button class="btn track-btn" data-track="3">4</button>
+                    <button class="btn track-btn" data-track="4">5</button>
+                    <button class="btn track-btn" data-track="5">6</button>
+                    <button class="btn track-btn" data-track="6">7</button>
+                </div>
+            </div>
+            <p id="trackWaitingText" class="text-gray-400 text-xs mb-6 hidden">Waiting for host to select track...</p>
+
+            <button id="startBtn" class="btn hidden w-full" style="background-color: #10b981; border-color: #34d399;">START RACE</button>
+        </div>
+    </div>
+
+    <!-- HUD -->
+    <div id="hudUI" class="ui-layer hidden" style="justify-content: flex-start;">
+        <div class="w-full flex justify-between p-4 pointer-events-none">
+            <div class="bg-slate-900/80 p-3 rounded border-2 border-blue-500 shadow-lg">
+                <p class="text-xl text-yellow-400">LAP <span id="lapDisplay">1</span>/3</p>
+                <p class="text-xs mt-2 text-white" id="timeDisplay">00:00.0</p>
+                <p class="text-[10px] mt-1 text-gray-400">POS: <span id="posDisplay">1</span>/<span id="totalPlayersDisplay">1</span></p>
+            </div>
+            <div class="bg-slate-900/80 p-3 rounded border-2 border-purple-500 flex flex-col items-center shadow-lg">
+                <p class="text-[10px] text-gray-300 mb-1">ITEM</p>
+                <div id="itemBox" class="w-14 h-14 border-2 border-gray-600 rounded bg-black flex justify-center items-center text-3xl">
+                    
+                </div>
+                <p class="text-[8px] text-gray-400 mt-1">SPACE</p>
+            </div>
+        </div>
+        
+        <!-- Spectator UI -->
+        <div id="spectatorUI" class="absolute top-24 left-1/2 transform -translate-x-1/2 bg-slate-900/90 px-6 py-3 rounded border-2 border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.5)] text-center hidden pointer-events-none">
+            <p class="text-[10px] text-gray-400 mb-1">SPECTATING</p>
+            <p class="text-xl text-yellow-400" id="spectatorName">Player</p>
+            <p class="text-[8px] text-gray-500 mt-2">TAP [ITEM / SPACE] TO SWITCH</p>
+        </div>
+
+        <div id="countdown" class="absolute inset-0 flex justify-center items-center text-8xl text-yellow-400 hidden drop-shadow-2xl font-bold" style="-webkit-text-stroke: 3px black;">
+            3
+        </div>
+        <div id="messageLog" class="absolute top-32 right-4 text-xs text-right opacity-90 pointer-events-none space-y-2"></div>
+    </div>
+
+    <!-- Leaderboard -->
+    <div id="leaderboardUI" class="ui-layer hidden">
+        <div class="panel w-full max-w-lg">
+            <h1 class="text-2xl mb-6 text-yellow-400">FINISH</h1>
+            <div id="leaderboardList" class="flex flex-col gap-3 mb-6 text-left text-sm">
+                
+            </div>
+            <button id="nextRaceBtn" class="btn hidden w-full">NEXT RACE</button>
+            <p id="nextRaceWaitText" class="text-xs text-gray-400 mt-4">Waiting for host...</p>
+        </div>
+    </div>
+
+    <div id="mobileControls">
+        <div class="control-group">
+            <div class="d-pad" id="btnLeft">←</div>
+            <div class="d-pad" id="btnRight">→</div>
+        </div>
+        <div class="control-group">
+            <div class="d-pad" id="btnBrake">B</div>
+            <div class="d-pad" id="btnGas">A</div>
+            <div class="action-btn" id="btnItem">🎁</div>
+        </div>
+    </div>
+
+    <script>
+        // --- NETWORKING (PeerJS WebRTC & Local Fallback) ---
+        let peer = null;
+        let connections = {}; // For host: connected clients
+        let hostConnection = null; // For client: connection to host
+        
+        let isHost = false;
+        let myId = '';
+        let myName = 'Player';
+        let usingFallback = false;
+        
+        const SYNC_RATE = 50; // ms (20 updates/sec for 3D is better)
+        let lastSyncTime = 0;
+
+        // Shared State
+        let gameState = {
+            status: 'waiting', // waiting, countdown, racing, finished
+            track: 0,
+            winner: null,
+            startTime: 0,
+            players: {} // dict of player data
+        };
+
+        let spectatingId = null;
+
+        const generateShortId = () => Math.random().toString(36).substring(2, 8).toUpperCase();
+
+        // --- VIRTUAL P2P FALLBACK (For Restricted iframe/Canvas environments) ---
+        // Uses BroadcastChannel to allow multiplayer across tabs in the same browser when WebSockets are blocked.
+        class VirtualPeer {
+            constructor(id) {
+                this.id = id || generateShortId();
+                this.channel = new BroadcastChannel('kart-game-p2p');
+                this.events = {};
+                this.connections = {};
+                
+                this.channel.onmessage = (e) => {
+                    const msg = e.data;
+                    if (msg.target === this.id && msg.type === 'connect') {
+                        const conn = new VirtualConnection(msg.source, this.channel, this.id);
+                        this.connections[msg.source] = conn;
+                        if (this.events['connection']) this.events['connection'](conn);
+                        this.channel.postMessage({ type: 'ack', source: this.id, target: msg.source });
+                    }
+                };
+                setTimeout(() => { if (this.events['open']) this.events['open'](this.id); }, 100);
+            }
+            on(ev, cb) { this.events[ev] = cb; }
+            connect(targetId) {
+                const conn = new VirtualConnection(targetId, this.channel, this.id);
+                this.channel.postMessage({ type: 'connect', source: this.id, target: targetId });
+                const ackListener = (e) => {
+                    if (e.data.type === 'ack' && e.data.source === targetId && e.data.target === this.id) {
+                        if (conn.events['open']) conn.events['open']();
+                        this.channel.removeEventListener('message', ackListener);
+                    }
+                };
+                this.channel.addEventListener('message', ackListener);
+                return conn;
+            }
+        }
+        
+        class VirtualConnection {
+            constructor(peerId, channel, myId) {
+                this.peer = peerId;
+                this.channel = channel;
+                this.myId = myId;
+                this.events = {};
+                this.open = true;
+                this._listener = (e) => {
+                    const msg = e.data;
+                    if (msg.target === this.myId && msg.source === this.peer && msg.type === 'data') {
+                        if (this.events['data']) this.events['data'](msg.payload);
+                    }
+                };
+                this.channel.addEventListener('message', this._listener);
+            }
+            on(ev, cb) { this.events[ev] = cb; }
+            send(data) {
+                if(this.open) this.channel.postMessage({ type: 'data', source: this.myId, target: this.peer, payload: data });
+            }
+            close() {
+                this.open = false;
+                this.channel.removeEventListener('message', this._listener);
+                if (this.events['close']) this.events['close']();
+            }
+        }
+
+        function checkEnvironment() {
+            try {
+                // Test if WebSockets are allowed in this environment to prevent Global SecurityError crash
+                let ws = new WebSocket('wss://0.peerjs.com:443/');
+                ws.close();
+                return true;
+            } catch(e) {
+                console.warn("WebSocket blocked, using Virtual Network Fallback.");
+                return false;
+            }
+        }
+
+        // Standard free STUN servers to drastically improve P2P connection success rates
+        const peerConfig = {
+            config: {
+                'iceServers': [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+            }
+        };
+
+        function initPeerAsHost() {
+            const roomId = generateShortId();
+            
+            if (checkEnvironment()) {
+                peer = new Peer(roomId, peerConfig);
+            } else {
+                usingFallback = true;
+                peer = new VirtualPeer(roomId);
+                document.getElementById('connectionStatus').innerHTML = "Running in Sandbox.<br>Open game in another tab to join!";
+            }
+            
+            peer.on('open', (id) => {
+                isHost = true;
+                myId = id;
+                myName = document.getElementById('playerNameInput').value || 'Host';
+                addPlayerToState(myId, myName, true);
+                
+                showUI('lobby');
+                document.getElementById('displayRoomId').textContent = id;
+                if(!usingFallback) document.getElementById('connectionStatus').textContent = "";
+            });
+
+            peer.on('connection', (conn) => {
+                connections[conn.peer] = conn;
+                
+                conn.on('data', (data) => {
+                    handleDataFromClient(conn.peer, data);
+                });
+                
+                conn.on('open', () => {
+                    // Send initial full state to new client
+                    conn.send({ type: 'fullState', state: gameState });
+                });
+
+                conn.on('close', () => {
+                    removePlayer(conn.peer);
+                    delete connections[conn.peer];
+                    broadcastState();
+                });
+            });
+
+            peer.on('error', (err) => {
+                document.getElementById('connectionStatus').textContent = "Error: " + err.type;
+                console.error(err);
+            });
+        }
+
+        function initPeerAsClient(hostId) {
+            if (checkEnvironment()) {
+                peer = new Peer(undefined, peerConfig);
+            } else {
+                usingFallback = true;
+                peer = new VirtualPeer();
+                document.getElementById('connectionStatus').innerHTML = "Running in Sandbox.<br>Connecting via local tabs...";
+            }
+            
+            peer.on('open', (id) => {
+                isHost = false;
+                myId = id;
+                myName = document.getElementById('playerNameInput').value || 'Player_' + id.substring(0,3);
+                
+                // Initialize local player state immediately so position properties are not undefined
+                gameState.players[myId] = {
+                    id: myId, name: myName,
+                    x: 0, y: 0, z: 0, rotationY: 0,
+                    color: Math.floor(Math.random() * 0xffffff),
+                    lap: 1, cp: 0, finished: false, finishTime: 0,
+                    isHost: false,
+                    traps: [], lightningTrigger: 0, starEndTime: 0,
+                    progressTotal: 0
+                };
+
+                hostConnection = peer.connect(hostId);
+                
+                hostConnection.on('open', () => {
+                    // Tell host who we are
+                    hostConnection.send({ type: 'join', id: myId, name: myName });
+                    showUI('lobby');
+                    document.getElementById('displayRoomId').textContent = hostId;
+                    if(!usingFallback) document.getElementById('connectionStatus').textContent = "";
+                });
+
+                hostConnection.on('data', (data) => {
+                    handleDataFromHost(data);
+                });
+
+                hostConnection.on('close', () => {
+                    alert("Host disconnected.");
+                    location.reload();
+                });
+                
+                hostConnection.on('error', (err) => {
+                    document.getElementById('connectionStatus').textContent = "Connection Error";
+                    console.error(err);
+                });
+            });
+        }
+
+        // --- HOST LOGIC ---
+        function addPlayerToState(id, name, hostFlag = false) {
+            gameState.players[id] = {
+                id: id, name: name,
+                x: 0, y: 0, z: 0, rotationY: 0,
+                color: Math.random() * 0xffffff,
+                lap: 1, cp: 0, finished: false, finishTime: 0,
+                isHost: hostFlag,
+                traps: [], lightningTrigger: 0, starEndTime: 0,
+                progressTotal: 0
+            };
+            broadcastState();
+        }
+
+        function removePlayer(id) {
+            if(gameState.players[id]) {
+                delete gameState.players[id];
+                broadcastState();
+            }
+        }
+
+        function handleDataFromClient(clientId, data) {
+            if (data.type === 'join') {
+                addPlayerToState(clientId, data.name);
+            } else if (data.type === 'update') {
+                // Client sending their local physics state
+                if(gameState.players[clientId]) {
+                    Object.assign(gameState.players[clientId], data.playerState);
+                }
+            } else if (data.type === 'action') {
+                if(data.action === 'lightning') {
+                    // Record lightning strike on state, let clients handle VFX
+                    gameState.players[clientId].lightningTrigger = Date.now();
+                }
+            }
+        }
+
+        function broadcastState() {
+            if (!isHost) return;
+            const updateMsg = { type: 'stateUpdate', state: gameState };
+            Object.values(connections).forEach(conn => {
+                if (conn.open) conn.send(updateMsg);
+            });
+            updateLobbyUI();
+            updateLeaderboardLogic();
+        }
+
+        // --- CLIENT LOGIC ---
+        function handleDataFromHost(data) {
+            if (data.type === 'fullState' || data.type === 'stateUpdate') {
+                const oldStatus = gameState.status;
+                
+                // Deep merge state to avoid losing local properties like ThreeJS meshes
+                const newPlayers = data.state.players;
+                for(let pid in newPlayers) {
+                    if(!gameState.players[pid]) {
+                        // Copy full initial state if player entry does not exist locally
+                        gameState.players[pid] = { ...newPlayers[pid] };
+                    } else if(pid === myId) {
+                        // For local player, sync meta fields while preserving active local physics transform
+                        gameState.players[pid].lap = newPlayers[pid].lap;
+                        gameState.players[pid].cp = newPlayers[pid].cp;
+                        gameState.players[pid].finished = newPlayers[pid].finished;
+                        gameState.players[pid].finishTime = newPlayers[pid].finishTime;
+                        gameState.players[pid].isHost = newPlayers[pid].isHost;
+                        if (newPlayers[pid].name) gameState.players[pid].name = newPlayers[pid].name;
+                        if (newPlayers[pid].color) gameState.players[pid].color = newPlayers[pid].color;
+                    } else {
+                        Object.assign(gameState.players[pid], newPlayers[pid]);
+                        
+                        // Check lightning
+                        if(newPlayers[pid].lightningTrigger && newPlayers[pid].lightningTrigger > localLightningRecord) {
+                            localLightningRecord = newPlayers[pid].lightningTrigger;
+                            triggerLightningEffect();
+                        }
+                    }
+                }
+                
+                // Remove disconnected players
+                for(let pid in gameState.players) {
+                    if(!newPlayers[pid]) {
+                        removePlayerMesh(pid);
+                        delete gameState.players[pid];
+                    }
+                }
+
+                gameState.status = data.state.status;
+                gameState.track = data.state.track;
+                gameState.winner = data.state.winner;
+                gameState.startTime = data.state.startTime;
+
+                handleStateTransitions(oldStatus, gameState.status);
+                updateLobbyUI();
+                
+                updatePositionsDisplay();
+            }
+        }
+
+        function sendUpdateToHost() {
+            if (isHost) {
+                // Host updates their own state directly
+                broadcastState(); // Sync tick
+            } else if (hostConnection && hostConnection.open) {
+                // Client sends minimal state
+                const myState = gameState.players[myId];
+                if(myState && typeof myState.x === 'number') {
+                    hostConnection.send({
+                        type: 'update',
+                        playerState: {
+                            x: myState.x, y: myState.y, z: myState.z, rotationY: myState.rotationY,
+                            lap: myState.lap, cp: myState.cp,
+                            finished: myState.finished, finishTime: myState.finishTime,
+                            traps: myState.traps, starEndTime: myState.starEndTime,
+                            progressTotal: (myState.lap * 1000) + myState.cp
+                        }
+                    });
+                }
+            }
+        }
+
+        function sendAction(actionType) {
+            if(isHost) {
+                if(actionType === 'lightning') {
+                    gameState.players[myId].lightningTrigger = Date.now();
+                    triggerLightningEffect();
+                }
+            } else if(hostConnection && hostConnection.open) {
+                hostConnection.send({ type: 'action', action: actionType });
+            }
+        }
+
+        // --- THREE.JS ENGINE ---
+        let scene, camera, renderer;
+        let playerMeshes = {};
+        let trackMeshes = [];
+        let items3D = [];
+        let trapMeshes = []; // Bananas
+        
+        const ROAD_WIDTH = 100; // Narrower track to increase difficulty
+        const MAP_SCALE = 0.55; // Expanded 3D Map Scale (makes everything much bigger)
+
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // Sky blue
+            scene.fog = new THREE.Fog(0x87CEEB, 200, 800);
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+            renderer.domElement.id = "gameCanvas";
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(100, 200, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.left = -200;
+            dirLight.shadow.camera.right = 200;
+            dirLight.shadow.camera.top = 200;
+            dirLight.shadow.camera.bottom = -200;
+            scene.add(dirLight);
+
+            // Ground plane (Grass)
+            const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+            const groundMat = new THREE.MeshLambertMaterial({ color: 0x4ade80 }); // Tailwind green-400
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            ground.position.y = -0.1;
+            scene.add(ground);
+
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+            
+            // Re-hide canvas initially until game starts
+            renderer.domElement.style.display = 'none';
+        }
+
+        // Track data (Harder tracks with more complex curves)
+        const maps = [
+            { name: "Oval", points: [[600, 1100], [400, 1100], [300, 900], [300, 600], [400, 400], [1600, 400], [1700, 600], [1700, 900], [1600, 1100]] },
+            { name: "Figure 8", points: [[1000, 750], [600, 400], [400, 600], [600, 1100], [1000, 750], [1400, 400], [1600, 600], [1400, 1100]] },
+            { name: "Hairpin Hell", points: [[500, 1000], [500, 500], [1000, 300], [1000, 800], [1500, 800], [1500, 300], [1800, 600], [1800, 1000]] },
+            { name: "Snake", points: [[400, 1200], [400, 300], [1000, 300], [1000, 1200], [1600, 1200], [1600, 300], [1000, 750]] },
+            { name: "Complex", points: [[400, 1100], [400, 400], [800, 400], [800, 900], [1200, 900], [1200, 400], [1600, 400], [1600, 1100]] },
+            { name: "Star", points: [[1000, 300], [1200, 700], [1700, 700], [1300, 1000], [1500, 1400], [1000, 1100], [500, 1400], [700, 1000], [300, 700], [800, 700]] },
+            { name: "ZigZag", points: [[1000, 200], [1500, 400], [800, 600], [1600, 800], [800, 1000], [1500, 1200], [1000, 1400], [500, 800]] }
+        ];
+
+        let currentMapPoints = [];
+        let checkpoints = [];
+        let collisionPoints = [];
+        let trackPathCurve = null;
+
+        function createRoadTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            
+            // Dark asphalt base
+            ctx.fillStyle = '#111111'; 
+            ctx.fillRect(0, 0, 256, 256);
+            
+            // Add noise for detailed asphalt look
+            for(let i=0; i<3000; i++) {
+                ctx.fillStyle = Math.random() > 0.5 ? '#1a1a1a' : '#050505';
+                ctx.fillRect(Math.random()*256, Math.random()*256, 2, 2);
+            }
+            
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(100, 1);
+            return tex;
+        }
+
+        function createBarrierTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            
+            // Red and white racing barrier stripes
+            ctx.fillStyle = '#ef4444'; 
+            ctx.fillRect(0, 0, 128, 64);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, 64, 64); 
+            
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(200, 1);
+            return tex;
+        }
+
+        function build3DTrack(mapIndex) {
+            // Cleanup old track
+            trackMeshes.forEach(m => scene.remove(m));
+            trackMeshes = [];
+            items3D.forEach(i => scene.remove(i.mesh));
+            items3D = [];
+            
+            const rawPoints = maps[mapIndex].points;
+            currentMapPoints = rawPoints.map(p => new THREE.Vector3((p[0]-1000)*MAP_SCALE, 0, (p[1]-750)*MAP_SCALE));
+            
+            // Create a closed spline curve
+            trackPathCurve = new THREE.CatmullRomCurve3(currentMapPoints, true);
+            
+            // Build Road Mesh
+            const tubeGeo = new THREE.TubeGeometry(trackPathCurve, 200, ROAD_WIDTH/2, 16, true);
+            const positions = tubeGeo.attributes.position.array;
+            for(let i=0; i<positions.length; i+=3) {
+                positions[i+1] = 0.1; // Flatten to ground level
+            }
+            tubeGeo.computeVertexNormals();
+
+            const roadMat = new THREE.MeshLambertMaterial({ map: createRoadTexture() });
+            const roadMesh = new THREE.Mesh(tubeGeo, roadMat);
+            roadMesh.receiveShadow = true;
+            scene.add(roadMesh);
+            trackMeshes.push(roadMesh);
+
+            // Calculate offset curves for inner and outer walls
+            const leftPoints = [];
+            const rightPoints = [];
+            const segments = 200;
+            for(let i=0; i<=segments; i++) {
+                const t = i/segments;
+                const pt = trackPathCurve.getPointAt(t);
+                const tan = trackPathCurve.getTangentAt(t);
+                const norm = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+                
+                leftPoints.push(pt.clone().add(norm.clone().multiplyScalar(ROAD_WIDTH/2 + 1)));
+                rightPoints.push(pt.clone().add(norm.clone().multiplyScalar(-ROAD_WIDTH/2 - 1)));
+            }
+            
+            const leftCurve = new THREE.CatmullRomCurve3(leftPoints, true);
+            const rightCurve = new THREE.CatmullRomCurve3(rightPoints, true);
+            const barrierMat = new THREE.MeshLambertMaterial({ map: createBarrierTexture() });
+            
+            // Generate Outer Wall Fence
+            const leftWallGeo = new THREE.TubeGeometry(leftCurve, 200, 1.5, 8, true);
+            const leftWallMesh = new THREE.Mesh(leftWallGeo, barrierMat);
+            leftWallMesh.position.y = 2; // Raise above ground
+            leftWallMesh.scale.set(1, 4, 1); // Make it tall
+            leftWallMesh.castShadow = true;
+            scene.add(leftWallMesh);
+            trackMeshes.push(leftWallMesh);
+
+            // Generate Inner Wall Fence
+            const rightWallGeo = new THREE.TubeGeometry(rightCurve, 200, 1.5, 8, true);
+            const rightWallMesh = new THREE.Mesh(rightWallGeo, barrierMat);
+            rightWallMesh.position.y = 2;
+            rightWallMesh.scale.set(1, 4, 1);
+            rightWallMesh.castShadow = true;
+            scene.add(rightWallMesh);
+            trackMeshes.push(rightWallMesh);
+
+            // Add detailed center dashed line
+            const dashGeo = new THREE.PlaneGeometry(1, 6);
+            const dashMat = new THREE.MeshBasicMaterial({color: 0xffffff});
+            const dashCount = 150;
+            for(let i=0; i<dashCount; i++) {
+                const pt = trackPathCurve.getPointAt(i/dashCount);
+                const tan = trackPathCurve.getTangentAt(i/dashCount);
+                const mesh = new THREE.Mesh(dashGeo, dashMat);
+                mesh.position.set(pt.x, 0.2, pt.z);
+                mesh.lookAt(pt.clone().add(tan));
+                mesh.rotateX(-Math.PI/2);
+                scene.add(mesh);
+                trackMeshes.push(mesh);
+            }
+
+            // Generate checkpoints and high-density collision points
+            checkpoints = [];
+            collisionPoints = []; 
+            for(let i=0; i<100; i++) checkpoints.push(trackPathCurve.getPointAt(i/100));
+            for(let i=0; i<250; i++) collisionPoints.push(trackPathCurve.getPointAt(i/250));
+
+            // Start line
+            const startPt = checkpoints[0];
+            const startTangent = trackPathCurve.getTangentAt(0);
+            const startGeo = new THREE.PlaneGeometry(ROAD_WIDTH, 4);
+            const startMat = new THREE.MeshBasicMaterial({color: 0xffffff});
+            const startMesh = new THREE.Mesh(startGeo, startMat);
+            startMesh.position.copy(startPt);
+            startMesh.position.y = 0.25; 
+            startMesh.lookAt(startPt.clone().add(startTangent));
+            startMesh.rotateX(-Math.PI/2);
+            scene.add(startMesh);
+            trackMeshes.push(startMesh);
+
+            // Item Boxes
+            spawnItemBoxes();
+        }
+
+        function spawnItemBoxes() {
+            // Place at 30% and 70% along track
+            const p1 = trackPathCurve.getPointAt(0.3);
+            const p2 = trackPathCurve.getPointAt(0.7);
+            
+            [p1, p2].forEach(p => {
+                const geo = new THREE.BoxGeometry(10, 10, 10);
+                const mat = new THREE.MeshLambertMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.8 });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.set(p.x, 5, p.z);
+                mesh.castShadow = true;
+                scene.add(mesh);
+                
+                // Inner question mark approximation (smaller darker box)
+                const innerGeo = new THREE.BoxGeometry(5,5,5);
+                const innerMat = new THREE.MeshBasicMaterial({color: 0xff0000});
+                const innerMesh = new THREE.Mesh(innerGeo, innerMat);
+                mesh.add(innerMesh);
+
+                items3D.push({ mesh: mesh, active: true, respawnTime: 0, x: p.x, z: p.z });
+            });
+        }
+
+        function createCarMesh(colorHex) {
+            const group = new THREE.Group();
+            
+            // Body
+            const bodyGeo = new THREE.BoxGeometry(6, 3, 12);
+            const bodyMat = new THREE.MeshLambertMaterial({ color: colorHex });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 2.0;
+            body.castShadow = true;
+            group.add(body);
+            
+            // Cockpit
+            const topGeo = new THREE.BoxGeometry(4.5, 2.2, 6);
+            const topMat = new THREE.MeshLambertMaterial({ color: 0x1e293b }); // dark window
+            const top = new THREE.Mesh(topGeo, topMat);
+            top.position.set(0, 4.5, -1.5);
+            top.castShadow = true;
+            group.add(top);
+
+            // Wheels
+            const wheelGeo = new THREE.CylinderGeometry(1.5, 1.5, 1.5, 8);
+            const wheelMat = new THREE.MeshLambertMaterial({color: 0x000000});
+            const positions = [
+                [-3.75, 1.5, 4.5], [3.75, 1.5, 4.5], [-3.75, 1.5, -4.5], [3.75, 1.5, -4.5]
+            ];
+            positions.forEach(pos => {
+                const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+                wheel.rotation.z = Math.PI/2;
+                wheel.position.set(...pos);
+                wheel.castShadow = true;
+                group.add(wheel);
+            });
+
+            return group;
+        }
+
+        function removePlayerMesh(id) {
+            if(playerMeshes[id]) {
+                scene.remove(playerMeshes[id].mesh);
+                delete playerMeshes[id];
+            }
+        }
+
+        // Local Player Physics
+        const physics = {
+            speed: 0, maxSpeed: 3.6, accel: 0.15, friction: 0.96, turnSpeed: 0.05,
+            velocity: new THREE.Vector3(),
+            item: null, boostEndTime: 0, stunEndTime: 0
+        };
+        const keys = { w: false, a: false, s: false, d: false, space: false };
+
+        const itemsList = ['🍄', '🍌', '⚡', '⭐', '💣'];
+        let localLightningRecord = 0;
+
+        function resetLocalPhysics() {
+            const myState = gameState.players[myId];
+            if(!myState || !trackPathCurve) return;
+
+            spectatingId = null; // 관전 초기화
+
+            // Start positions based on ID
+            const startPt = trackPathCurve.getPointAt(0);
+            const tangent = trackPathCurve.getTangentAt(0);
+            
+            // Spread players safely without clipping walls
+            // Sorting IDs ensures deterministic placement across all clients
+            const sortedIds = Object.keys(gameState.players).sort();
+            const offsetIdx = sortedIds.indexOf(myId);
+            
+            const col = offsetIdx % 2; // 2 players per row to fit narrow tracks
+            const row = Math.floor(offsetIdx / 2);
+
+            const perp = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize(); // Perpendicular
+            
+            const offsetAmt = (col === 0 ? -1 : 1) * 20; 
+            const rowOffset = -(row * 45) - 20; // Start slightly behind line, stagger by 45
+
+            myState.x = startPt.x + perp.x * offsetAmt + tangent.x * rowOffset;
+            myState.z = startPt.z + perp.z * offsetAmt + tangent.z * rowOffset;
+            
+            // Y rotation based on tangent
+            myState.rotationY = Math.atan2(tangent.x, tangent.z); 
+
+            myState.lap = 1; myState.cp = 1; // start looking for CP 1
+            myState.finished = false; myState.finishTime = 0;
+            myState.traps = [];
+            
+            physics.speed = 0;
+            physics.item = null;
+            physics.stunEndTime = 0;
+            
+            updateHud();
+        }
+
+        function useItem() {
+            if (!physics.item || gameState.status !== 'racing' || gameState.players[myId].finished) return;
+            
+            const itm = physics.item;
+            physics.item = null;
+            updateHud();
+
+            if (itm === '🍄') {
+                physics.boostEndTime = Date.now() + 3500;
+                showMessage("MEGA BOOST!");
+            } else if (itm === '🍌') {
+                const myState = gameState.players[myId];
+                // Drop cluster of 3
+                const bx = myState.x - Math.sin(myState.rotationY) * 20;
+                const bz = myState.z - Math.cos(myState.rotationY) * 20;
+                myState.traps.push({ type: 'banana', x: bx, z: bz, id: Date.now() });
+                myState.traps.push({ type: 'banana', x: bx + 10, z: bz + 5, id: Date.now()+1 });
+                myState.traps.push({ type: 'banana', x: bx - 10, z: bz + 5, id: Date.now()+2 });
+                showMessage("BANANA BUNCH!");
+            } else if (itm === '⚡') {
+                sendAction('lightning');
+                showMessage("LIGHTNING STRIKE!");
+            } else if (itm === '⭐') {
+                gameState.players[myId].starEndTime = Date.now() + 8000;
+                showMessage("STAR POWER!");
+            } else if (itm === '💣') {
+                const myState = gameState.players[myId];
+                const bx = myState.x - Math.sin(myState.rotationY) * 20;
+                const bz = myState.z - Math.cos(myState.rotationY) * 20;
+                myState.traps.push({ type: 'bomb', x: bx, z: bz, id: Date.now() });
+                showMessage("BOMB DROPPED!");
+            }
+        }
+
+        function getNextSpectatorTarget(currentId, forceNext = false) {
+            // 나를 제외하고 아직 완주하지 않은 플레이어 목록 생성
+            const activePlayers = Object.values(gameState.players).filter(p => !p.finished && p.id !== myId);
+            if (activePlayers.length === 0) return null;
+            
+            if (!currentId) return activePlayers[0].id;
+            
+            const idx = activePlayers.findIndex(p => p.id === currentId);
+            if (idx === -1) return activePlayers[0].id; // 보고 있던 사람이 방금 완주했다면 다른 사람으로 변경
+            
+            if (forceNext) {
+                return activePlayers[(idx + 1) % activePlayers.length].id;
+            }
+            
+            return currentId;
+        }
+
+        function triggerLightningEffect() {
+            const myState = gameState.players[myId];
+            const isStar = (myState && myState.starEndTime && Date.now() < myState.starEndTime);
+            
+            if (isStar) {
+                showMessage("⭐ BLOCKED LIGHTNING!");
+                return; // Immune
+            }
+
+            const flash = document.getElementById('flashOverlay');
+            flash.style.opacity = '1';
+            setTimeout(() => { flash.style.opacity = '0'; }, 150);
+            
+            if (myState && !myState.finished) {
+                physics.stunEndTime = Date.now() + 3500;
+                physics.speed = 0;
+                physics.item = null; // 번개를 맞으면 들고 있던 아이템 소멸
+                updateHud();
+                showMessage("⚡ ZAPPED BY LIGHTNING!");
+            }
+        }
+
+        function updateLocalPhysics() {
+            const myState = gameState.players[myId];
+            if (!myState || gameState.status !== 'racing' || myState.finished) return;
+
+            const isStar = (myState.starEndTime && Date.now() < myState.starEndTime);
+
+            // Stun effect (번개나 바나나에 맞았을 때)
+            if (!isStar && Date.now() < physics.stunEndTime) {
+                physics.speed *= 0.8; 
+            } else {
+                let currentMaxSpeed = physics.maxSpeed;
+                if (Date.now() < physics.boostEndTime) currentMaxSpeed *= 1.8;
+                if (isStar) currentMaxSpeed *= 2.2;
+
+                // Acceleration
+                if (keys.w) physics.speed += physics.accel;
+                if (keys.s) physics.speed -= physics.accel;
+                
+                // Steering (움직일 때만 회전 가능)
+                if (Math.abs(physics.speed) > 0.05) {
+                    const turnMult = physics.speed > 0 ? 1 : -1;
+                    if (keys.a) myState.rotationY += physics.turnSpeed * turnMult;
+                    if (keys.d) myState.rotationY -= physics.turnSpeed * turnMult;
+                }
+            }
+
+            // Friction and Limits
+            physics.speed *= physics.friction;
+            physics.speed = Math.max(-physics.maxSpeed/2, Math.min(physics.speed, physics.maxSpeed * (Date.now() < physics.boostEndTime ? 1.5 : 1)));
+
+            if (Math.abs(physics.speed) < 0.01) physics.speed = 0;
+
+            let nextX = myState.x + Math.sin(myState.rotationY) * physics.speed;
+            let nextZ = myState.z + Math.cos(myState.rotationY) * physics.speed;
+
+            // Player-to-Player Collision
+            const carRadiusSq = 14 * 14; // Approximate bounding circle radius for cars
+            Object.values(gameState.players).forEach(p => {
+                if (p.id !== myId && !p.finished) {
+                    const dx = nextX - p.x;
+                    const dz = nextZ - p.z;
+                    const distSq = dx*dx + dz*dz;
+                    if (distSq < carRadiusSq && distSq > 0.01) {
+                        const dist = Math.sqrt(distSq);
+                        const overlap = 14 - dist;
+                        // Bounce/Push away naturally
+                        nextX += (dx / dist) * overlap * 0.5;
+                        nextZ += (dz / dist) * overlap * 0.5;
+                        physics.speed *= 0.90; // Lose speed on impact
+                    }
+                }
+            });
+
+            // Boundary/Fence Collision using continuous segment check (Detailed Hitbox)
+            let isOutOfBounds = true;
+            let minDistSq = Infinity;
+            
+            if (collisionPoints.length > 0) {
+                for(let i = 0; i < collisionPoints.length; i++) {
+                    const v = collisionPoints[i];
+                    const w = collisionPoints[(i + 1) % collisionPoints.length];
+                    
+                    // Math for closest distance from point to line segment
+                    const l2 = (v.x - w.x)*(v.x - w.x) + (v.z - w.z)*(v.z - w.z);
+                    let dSq;
+                    if (l2 === 0) {
+                        dSq = (nextX - v.x)*(nextX - v.x) + (nextZ - v.z)*(nextZ - v.z);
+                    } else {
+                        let t = ((nextX - v.x) * (w.x - v.x) + (nextZ - v.z) * (w.z - v.z)) / l2;
+                        t = Math.max(0, Math.min(1, t)); // clamp to line segment points
+                        const projX = v.x + t * (w.x - v.x);
+                        const projZ = v.z + t * (w.z - v.z);
+                        dSq = (nextX - projX)*(nextX - projX) + (nextZ - projZ)*(nextZ - projZ);
+                    }
+                    if (dSq < minDistSq) minDistSq = dSq;
+                }
+            } else {
+                isOutOfBounds = false; // Failsafe
+            }
+
+            if (minDistSq < (ROAD_WIDTH/2 - 5) * (ROAD_WIDTH/2 - 5)) {
+                isOutOfBounds = false;
+            }
+
+            if (isOutOfBounds) {
+                physics.speed *= -0.4; // Bounce off the wall
+            } else {
+                myState.x = nextX;
+                myState.z = nextZ;
+            }
+
+            // Checkpoints & Laps
+            if (checkpoints.length > 0) {
+                const targetCP = checkpoints[myState.cp % checkpoints.length];
+                const dx = myState.x - targetCP.x;
+                const dz = myState.z - targetCP.z;
+                if (dx*dx + dz*dz < 2500) { // 타겟 체크포인트 반경 통과 (50*50)
+                    myState.cp++;
+                    if (myState.cp > checkpoints.length) {
+                        myState.lap++;
+                        myState.cp = 1;
+                        
+                        if (myState.lap > 3) {
+                            myState.finished = true;
+                            myState.finishTime = Date.now() - gameState.startTime;
+                            showMessage("🏁 FINISHED!");
+                        } else {
+                            showMessage("LAP " + myState.lap);
+                        }
+                        updateHud();
+                    }
+                }
+            }
+
+            // Item Collection
+            if (!physics.item) {
+                items3D.forEach(item => {
+                    if (item.active) {
+                        const dx = myState.x - item.x;
+                        const dz = myState.z - item.z;
+                        if (dx*dx + dz*dz < 225) { // 아이템 박스 충돌 반경 (15*15)
+                            item.active = false;
+                            item.mesh.visible = false;
+                            physics.item = itemsList[Math.floor(Math.random() * itemsList.length)];
+                            updateHud();
+                            
+                            // 4초 후 아이템 재생성
+                            setTimeout(() => {
+                                item.active = true;
+                                item.mesh.visible = true;
+                            }, 4000);
+                        }
+                    }
+                });
+            }
+
+            // Banana/Bomb Traps Collision
+            Object.values(gameState.players).forEach(p => {
+                if (p.traps) {
+                    for (let i = p.traps.length - 1; i >= 0; i--) {
+                        const trap = p.traps[i];
+                        // 자기가 방금 놓은 폭탄/바나나에는 즉시 닿지 않게 유예 시간 부여
+                        if (p.id === myId && Date.now() - trap.id < 1500) continue; 
+                        
+                        const trapRadiusSq = trap.type === 'bomb' ? 6400 : 2401; // 80^2 for Bomb, 49^2 for Banana
+                        const dx = myState.x - trap.x;
+                        const dz = myState.z - trap.z;
+                        
+                        if (dx*dx + dz*dz < trapRadiusSq) { 
+                            p.traps.splice(i, 1); // 닿은 트랩 소멸
+                            
+                            if (isStar) {
+                                showMessage("SMASHED TRAP!");
+                            } else {
+                                if (trap.type === 'bomb') {
+                                    physics.stunEndTime = Date.now() + 4000;
+                                    physics.speed = 0;
+                                    showMessage("💥 HIT A BOMB!");
+                                } else {
+                                    physics.stunEndTime = Date.now() + 2500;
+                                    physics.speed = 0;
+                                    showMessage("🍌 SLIPPED ON BANANA!");
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function render3D() {
+            // Sync logic
+            updateLocalPhysics();
+            
+            const now = Date.now();
+            if(now - lastSyncTime > SYNC_RATE) {
+                sendUpdateToHost();
+                lastSyncTime = now;
+            }
+
+            // Spectator target calculation
+            const myState = gameState.players[myId];
+            if (gameState.status === 'racing' && myState && myState.finished) {
+                spectatingId = getNextSpectatorTarget(spectatingId, false);
+            } else {
+                spectatingId = null;
+            }
+
+            let camTargetId = spectatingId || myId;
+
+            // Update meshes
+            Object.values(gameState.players).forEach(p => {
+                if(!playerMeshes[p.id]) {
+                    playerMeshes[p.id] = { mesh: createCarMesh(p.color) };
+                    scene.add(playerMeshes[p.id].mesh);
+                }
+                
+                const m = playerMeshes[p.id].mesh;
+                
+                // Interpolate others, set self direct
+                if(p.id === myId) {
+                    m.position.set(p.x, 1, p.z);
+                    m.rotation.y = p.rotationY;
+                } else {
+                    // Simple LERP for remote
+                    m.position.lerp(new THREE.Vector3(p.x, 1, p.z), 0.3);
+                    
+                    // Rotation LERP (handle wrap)
+                    let diff = p.rotationY - m.rotation.y;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    m.rotation.y += diff * 0.3;
+                }
+
+                // Star Power Visual (Flashing & Resized)
+                if (p.starEndTime && now < p.starEndTime) {
+                    const hue = (now % 1000) / 1000;
+                    m.children[0].material.color.setHSL(hue, 1.0, 0.5); // Body Material
+                    m.scale.set(1.2, 1.2, 1.2);
+                } else {
+                    m.children[0].material.color.setHex(p.color);
+                    m.scale.set(1, 1, 1);
+                }
+
+                // Camera Follow Target (내 차 또는 관전 대상 차)
+                if(p.id === camTargetId) {
+                    const camOffset = new THREE.Vector3(0, 25, -45); // Behind and up
+                    let targetRot = (p.id === myId) ? p.rotationY : m.rotation.y;
+                    camOffset.applyAxisAngle(new THREE.Vector3(0,1,0), targetRot);
+                    
+                    const targetCamPos = m.position.clone().add(camOffset);
+                    const targetLookAt = m.position.clone().add(new THREE.Vector3(0, 4, 0));
+
+                    // Instant snap if camera is uninitialized or far away (prevents looking from bottom floor)
+                    if (camera.position.distanceTo(targetCamPos) > 100 || camera.position.lengthSq() < 1) {
+                        camera.position.copy(targetCamPos);
+                    } else {
+                        camera.position.lerp(targetCamPos, 0.15);
+                    }
+                    camera.lookAt(targetLookAt);
+                }
+
+                // Blink if zapped
+                if(p.lightningTrigger && now - p.lightningTrigger < 2000) {
+                    m.visible = Math.floor(now / 100) % 2 === 0;
+                } else {
+                    m.visible = true;
+                }
+            });
+
+            // Spectator UI Rendering
+            const specUI = document.getElementById('spectatorUI');
+            if (gameState.status === 'racing' && spectatingId && gameState.players[spectatingId]) {
+                specUI.classList.remove('hidden');
+                document.getElementById('spectatorName').textContent = gameState.players[spectatingId].name;
+            } else {
+                specUI.classList.add('hidden');
+            }
+
+            // Draw traps
+            // Rebuild trap meshes (inefficient but simple for small counts)
+            trapMeshes.forEach(t => scene.remove(t));
+            trapMeshes = [];
+            const bananaGeo = new THREE.ConeGeometry(4, 8, 6);
+            const bananaMat = new THREE.MeshLambertMaterial({color: 0xeab308}); // yellow
+            const bombGeo = new THREE.SphereGeometry(6, 16, 16);
+            const bombMat = new THREE.MeshLambertMaterial({color: 0x111111}); // black
+            
+            Object.values(gameState.players).forEach(p => {
+                if(p.traps) {
+                    p.traps.forEach(trap => {
+                        let tm;
+                        if (trap.type === 'bomb') {
+                            tm = new THREE.Mesh(bombGeo, bombMat);
+                            tm.position.set(trap.x, 4, trap.z);
+                        } else {
+                            tm = new THREE.Mesh(bananaGeo, bananaMat);
+                            tm.position.set(trap.x, 2, trap.z);
+                            tm.rotation.x = Math.PI/2;
+                        }
+                        scene.add(tm);
+                        trapMeshes.push(tm);
+                    });
+                }
+            });
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(render3D);
+        }
+
+        // --- UI & GAME FLOW ---
+        const uiConnection = document.getElementById('connectionUI');
+        const uiLobby = document.getElementById('lobbyUI');
+        const uiHud = document.getElementById('hudUI');
+        const uiLeaderboard = document.getElementById('leaderboardUI');
+
+        function showUI(name) {
+            [uiConnection, uiLobby, uiHud, uiLeaderboard].forEach(el => el.classList.add('hidden'));
+            if(name === 'connection') uiConnection.classList.remove('hidden');
+            if(name === 'lobby') { uiLobby.classList.remove('hidden'); document.getElementById('gameCanvas').style.display = 'none'; }
+            if(name === 'hud') { uiHud.classList.remove('hidden'); document.getElementById('gameCanvas').style.display = 'block'; }
+            if(name === 'leaderboard') uiLeaderboard.classList.remove('hidden');
+        }
+
+        function showMessage(msg) {
+            const log = document.getElementById('messageLog');
+            const el = document.createElement('div');
+            el.textContent = msg;
+            log.appendChild(el);
+            setTimeout(() => el.remove(), 3000);
+        }
+
+        function updateLobbyUI() {
+            if(gameState.status !== 'waiting') return;
+
+            // List players
+            let html = '';
+            const isWinner = gameState.winner === myId;
+            const hasAuth = isHost || isWinner;
+
+            Object.values(gameState.players).forEach(p => {
+                const colorHex = '#' + Math.floor(p.color).toString(16).padStart(6, '0');
+                const tag = p.id === myId ? '(ME)' : (p.isHost ? '(HOST)' : '');
+                html += `<div style="color:${colorHex}" class="font-bold my-1">• ${p.name} <span class="text-white text-[10px]">${tag}</span></div>`;
+            });
+            document.getElementById('playerList').innerHTML = html;
+
+            if (hasAuth) {
+                document.getElementById('trackSelection').classList.remove('hidden');
+                document.getElementById('startBtn').classList.remove('hidden');
+                document.getElementById('trackWaitingText').classList.add('hidden');
+            } else {
+                document.getElementById('trackSelection').classList.add('hidden');
+                document.getElementById('startBtn').classList.add('hidden');
+                document.getElementById('trackWaitingText').classList.remove('hidden');
+            }
+
+            document.querySelectorAll('.track-btn').forEach(btn => {
+                if (parseInt(btn.dataset.track) === gameState.track) btn.classList.add('selected');
+                else btn.classList.remove('selected');
+            });
+        }
+
+        function handleStateTransitions(oldStatus, newStatus) {
+            if (oldStatus === newStatus) return;
+            if (newStatus === 'waiting') {
+                showUI('lobby');
+            } else if (newStatus === 'countdown') {
+                startCountdown();
+            } else if (newStatus === 'finished') {
+                updateLeaderboardUI();
+            }
+        }
+
+        function startCountdown() {
+            build3DTrack(gameState.track);
+            resetLocalPhysics();
+            showUI('hud');
+            
+            const countEl = document.getElementById('countdown');
+            countEl.classList.remove('hidden');
+            
+            const timer = setInterval(() => {
+                let remaining = Math.ceil((gameState.startTime - Date.now()) / 1000);
+                if (remaining > 0) {
+                    countEl.textContent = remaining;
+                } else {
+                    clearInterval(timer);
+                    countEl.textContent = "GO!";
+                    setTimeout(() => countEl.classList.add('hidden'), 1000);
+                    
+                    if (isHost && gameState.status === 'countdown') {
+                        const oldStatus = gameState.status;
+                        gameState.status = 'racing';
+                        gameState.startTime = Date.now(); // Race real start
+                        handleStateTransitions(oldStatus, gameState.status);
+                        broadcastState();
+                    }
+                }
+            }, 100);
+        }
+
+        function formatTime(ms) {
+            if(ms < 0) return "00:00.0";
+            const mins = Math.floor(ms / 60000).toString().padStart(2, '0');
+            const secs = Math.floor((ms % 60000) / 1000).toString().padStart(2, '0');
+            const decis = Math.floor((ms % 1000) / 100);
+            return `${mins}:${secs}.${decis}`;
+        }
+
+        function updatePositionsDisplay() {
+            if(gameState.status !== 'racing') return;
+            
+            // Calc positions
+            let arr = Object.values(gameState.players);
+            // Sort by progress: lap * 1000 + cp. If finished, they keep max progress.
+            arr.sort((a,b) => {
+                if(a.finished && !b.finished) return -1;
+                if(!a.finished && b.finished) return 1;
+                if(a.finished && b.finished) return a.finishTime - b.finishTime;
+                
+                let ap = (a.lap * 1000) + a.cp;
+                let bp = (b.lap * 1000) + b.cp;
+                return bp - ap;
+            });
+
+            let myIndex = arr.findIndex(p => p.id === myId);
+            document.getElementById('posDisplay').textContent = myIndex + 1;
+            document.getElementById('totalPlayersDisplay').textContent = arr.length;
+        }
+
+        function updateHud() {
+            const myState = gameState.players[myId];
+            if(!myState) return;
+
+            document.getElementById('lapDisplay').textContent = Math.min(myState.lap, 3);
+            document.getElementById('itemBox').textContent = physics.item || '';
+            
+            if(gameState.status === 'racing' && !myState.finished) {
+                const elapsed = Date.now() - gameState.startTime;
+                document.getElementById('timeDisplay').textContent = formatTime(elapsed);
+            } else if (myState.finished) {
+                document.getElementById('timeDisplay').textContent = formatTime(myState.finishTime);
+            }
+        }
+
+        // Host only loop to check win conditions
+        function updateLeaderboardLogic() {
+            if(!isHost || gameState.status !== 'racing') return;
+
+            const players = Object.values(gameState.players);
+            const allFinished = players.length > 0 && players.every(p => p.finished);
+            const timeout = Date.now() - gameState.startTime > 180000;
+
+            if(allFinished || timeout) {
+                const finished = players.filter(p => p.finished).sort((a,b) => a.finishTime - b.finishTime);
+                gameState.winner = finished.length > 0 ? finished[0].id : null;
+                const oldStatus = gameState.status;
+                gameState.status = 'finished';
+                handleStateTransitions(oldStatus, gameState.status);
+                broadcastState();
+            }
+        }
+
+        function updateLeaderboardUI() {
+            showUI('leaderboard');
+            
+            let arr = Object.values(gameState.players);
+            arr.sort((a, b) => {
+                if (a.finished && b.finished) return a.finishTime - b.finishTime;
+                if (a.finished) return -1;
+                if (b.finished) return 1;
+                return ((b.lap * 1000) + b.cp) - ((a.lap * 1000) + a.cp);
+            });
+
+            let html = '';
+            arr.forEach((p, idx) => {
+                let timeStr = p.finished ? formatTime(p.finishTime) : 'DNF';
+                let medal = idx === 0 ? '🥇' : (idx===1 ? '🥈' : (idx===2 ? '🥉' : ''));
+                let colorHex = '#' + Math.floor(p.color).toString(16).padStart(6, '0');
+                html += `
+                    <div class="flex justify-between items-center bg-slate-800 p-3 rounded border border-gray-600">
+                        <span style="color:${colorHex}">${medal} ${idx+1}. ${p.name} ${p.id===myId?'(ME)':''}</span>
+                        <span class="text-white">${timeStr}</span>
+                    </div>
+                `;
+            });
+            document.getElementById('leaderboardList').innerHTML = html;
+
+            const hasAuth = isHost || gameState.winner === myId;
+            if(hasAuth) {
+                document.getElementById('nextRaceBtn').classList.remove('hidden');
+                document.getElementById('nextRaceWaitText').classList.add('hidden');
+            } else {
+                document.getElementById('nextRaceBtn').classList.add('hidden');
+                document.getElementById('nextRaceWaitText').classList.remove('hidden');
+            }
+        }
+
+        // --- EVENT LISTENERS ---
+        document.getElementById('btnHost').addEventListener('click', () => {
+            initPeerAsHost();
+        });
+
+        document.getElementById('btnJoin').addEventListener('click', () => {
+            const hostId = document.getElementById('joinIdInput').value.trim().toUpperCase();
+            if(hostId) initPeerAsClient(hostId);
+        });
+
+        document.getElementById('displayRoomId').addEventListener('click', (e) => {
+            const text = e.target.innerText;
+            const input = document.createElement('input');
+            input.value = text;
+            document.body.appendChild(input);
+            input.select();
+            document.execCommand('copy');
+            document.body.removeChild(input);
+            showMessage("Room ID copied to clipboard!");
+        });
+
+        document.querySelectorAll('.track-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                if (!isHost && gameState.winner !== myId) return;
+                gameState.track = parseInt(e.target.dataset.track);
+                if(isHost) broadcastState();
+                else if(hostConnection) hostConnection.send({type: 'updateTrack', track: gameState.track}); // Simplified, host should accept this
+            });
+        });
+
+        // Add special handler for client updating track
+        // Modifying handleDataFromClient
+        const originalHandleData = handleDataFromClient;
+        handleDataFromClient = function(clientId, data) {
+            originalHandleData(clientId, data);
+            if(data.type === 'updateTrack' && (clientId === gameState.winner || isHost)) {
+                gameState.track = data.track;
+                broadcastState();
+            }
+        };
+
+        document.getElementById('startBtn').addEventListener('click', () => {
+            if(!isHost) return;
+            const oldStatus = gameState.status;
+            gameState.status = 'countdown';
+            gameState.startTime = Date.now() + 3000;
+            handleStateTransitions(oldStatus, gameState.status);
+            broadcastState();
+        });
+
+        document.getElementById('nextRaceBtn').addEventListener('click', () => {
+            if(isHost) {
+                const oldStatus = gameState.status;
+                gameState.status = 'waiting';
+                handleStateTransitions(oldStatus, gameState.status);
+                broadcastState();
+            } else if(hostConnection && gameState.winner === myId) {
+                hostConnection.send({type: 'requestLobby'});
+            }
+        });
+
+        // Modifying handleDataFromClient again for next race
+        const originalHandleData2 = handleDataFromClient;
+        handleDataFromClient = function(clientId, data) {
+            originalHandleData2(clientId, data);
+            if(data.type === 'requestLobby' && clientId === gameState.winner) {
+                const oldStatus = gameState.status;
+                gameState.status = 'waiting';
+                handleStateTransitions(oldStatus, gameState.status);
+                broadcastState();
+            }
+        };
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowUp' || e.key === 'w') keys.w = true;
+            if (e.key === 'ArrowDown' || e.key === 's') keys.s = true;
+            if (e.key === 'ArrowLeft' || e.key === 'a') keys.a = true;
+            if (e.key === 'ArrowRight' || e.key === 'd') keys.d = true;
+            if (e.key === ' ' && !keys.space) { 
+                keys.space = true; 
+                if (spectatingId) {
+                    // 관전 중 스페이스바를 누르면 다음 플레이어로 시점 전환
+                    spectatingId = getNextSpectatorTarget(spectatingId, true);
+                } else {
+                    useItem(); 
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowUp' || e.key === 'w') keys.w = false;
+            if (e.key === 'ArrowDown' || e.key === 's') keys.s = false;
+            if (e.key === 'ArrowLeft' || e.key === 'a') keys.a = false;
+            if (e.key === 'ArrowRight' || e.key === 'd') keys.d = false;
+            if (e.key === ' ') keys.space = false;
+        });
+
+        // Mobile Controls
+        const bindTouch = (id, keyName) => {
+            const el = document.getElementById(id);
+            el.addEventListener('touchstart', (e) => { 
+                e.preventDefault(); 
+                keys[keyName] = true; 
+                if(keyName === 'space') {
+                    if (spectatingId) spectatingId = getNextSpectatorTarget(spectatingId, true);
+                    else useItem(); 
+                }
+            });
+            el.addEventListener('touchend', (e) => { e.preventDefault(); keys[keyName] = false; });
+        };
+        bindTouch('btnGas', 'w');
+        bindTouch('btnBrake', 's');
+        bindTouch('btnLeft', 'a');
+        bindTouch('btnRight', 'd');
+        bindTouch('btnItem', 'space');
+
+        // Init
+        init3D();
+        requestAnimationFrame(render3D);
+
+    </script>
+</body>
+</html>
