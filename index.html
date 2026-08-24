@@ -241,6 +241,11 @@
             <p class="text-[8px] text-gray-500 mt-2">TAP [ITEM / SPACE] TO SWITCH</p>
         </div>
 
+        <!-- Navigation Alert -->
+        <div id="wrongWayUI" class="absolute top-28 left-1/2 transform -translate-x-1/2 bg-red-600/90 text-white font-bold px-6 py-2 rounded-full border-2 border-red-300 text-xl animate-bounce hidden shadow-[0_0_20px_rgba(239,68,68,0.8)] pointer-events-none">
+            ⚠️ WRONG WAY! ⚠️
+        </div>
+
         <div id="countdown" class="absolute inset-0 flex justify-center items-center text-8xl text-yellow-400 hidden drop-shadow-2xl font-bold" style="-webkit-text-stroke: 3px black;">
             3
         </div>
@@ -450,7 +455,7 @@
                     color: Math.floor(Math.random() * 0xffffff),
                     lap: 1, cp: 0, finished: false, finishTime: 0,
                     isHost: false,
-                    traps: [], lightningTrigger: 0, starEndTime: 0,
+                    traps: [], lightningTrigger: 0, starEndTime: 0, hasShield: false, shieldEndTime: 0, ghostEndTime: 0,
                     progressTotal: 0
                 };
 
@@ -488,7 +493,7 @@
                 color: Math.random() * 0xffffff,
                 lap: 1, cp: 0, finished: false, finishTime: 0,
                 isHost: hostFlag,
-                traps: [], lightningTrigger: 0, starEndTime: 0,
+                traps: [], lightningTrigger: 0, starEndTime: 0, hasShield: false, shieldEndTime: 0, ghostEndTime: 0,
                 progressTotal: 0
             };
             broadcastState();
@@ -496,8 +501,16 @@
 
         function removePlayer(id) {
             if(gameState.players[id]) {
+                removePlayerMesh(id);
                 delete gameState.players[id];
                 broadcastState();
+            }
+        }
+
+        function removePlayerMesh(id) {
+            if (playerMeshes[id]) {
+                scene.remove(playerMeshes[id].mesh);
+                delete playerMeshes[id];
             }
         }
 
@@ -511,8 +524,32 @@
                 }
             } else if (data.type === 'action') {
                 if(data.action === 'lightning') {
-                    // Record lightning strike on state, let clients handle VFX
-                    gameState.players[clientId].lightningTrigger = Date.now();
+                    // Strike all players EXCEPT sender
+                    const now = Date.now();
+                    Object.keys(gameState.players).forEach(pid => {
+                        if (pid !== clientId) {
+                            gameState.players[pid].lightningTrigger = now;
+                        }
+                    });
+                    broadcastState();
+                }
+            } else if (data.type === 'removeTrap') {
+                const owner = gameState.players[data.ownerId];
+                if (owner && owner.traps) {
+                    owner.traps = owner.traps.filter(t => t.id !== data.trapId);
+                    broadcastState();
+                }
+            } else if (data.type === 'updateTrack') {
+                if (clientId === gameState.winner || isHost) {
+                    gameState.track = data.track;
+                    broadcastState();
+                }
+            } else if (data.type === 'requestLobby') {
+                if (clientId === gameState.winner) {
+                    const oldStatus = gameState.status;
+                    gameState.status = 'waiting';
+                    handleStateTransitions(oldStatus, gameState.status);
+                    broadcastState();
                 }
             }
         }
@@ -549,9 +586,11 @@
                         if (newPlayers[pid].color) gameState.players[pid].color = newPlayers[pid].color;
                     } else {
                         Object.assign(gameState.players[pid], newPlayers[pid]);
-                        
-                        // Check lightning
-                        if(newPlayers[pid].lightningTrigger && newPlayers[pid].lightningTrigger > localLightningRecord) {
+                    }
+
+                    // Check lightning trigger for everyone including local player
+                    if(newPlayers[pid].lightningTrigger && newPlayers[pid].lightningTrigger > localLightningRecord) {
+                        if (pid === myId) {
                             localLightningRecord = newPlayers[pid].lightningTrigger;
                             triggerLightningEffect();
                         }
@@ -592,7 +631,7 @@
                             x: myState.x, y: myState.y, z: myState.z, rotationY: myState.rotationY,
                             lap: myState.lap, cp: myState.cp,
                             finished: myState.finished, finishTime: myState.finishTime,
-                            traps: myState.traps, starEndTime: myState.starEndTime,
+                            traps: myState.traps, starEndTime: myState.starEndTime, hasShield: !!myState.hasShield, shieldEndTime: myState.shieldEndTime || 0, ghostEndTime: myState.ghostEndTime,
                             progressTotal: (myState.lap * 1000) + myState.cp
                         }
                     });
@@ -615,41 +654,50 @@
         let scene, camera, renderer;
         let playerMeshes = {};
         let trackMeshes = [];
+        let sceneryMeshes = [];
+        let animatedScenery = [];
         let items3D = [];
         let trapMeshes = []; // Bananas
+        let navArrowMesh = null; // Navigation 3D guide arrow
         
         const ROAD_WIDTH = 100; // Narrower track to increase difficulty
         const MAP_SCALE = 0.55; // Expanded 3D Map Scale (makes everything much bigger)
 
         function init3D() {
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x87CEEB); // Sky blue
-            scene.fog = new THREE.Fog(0x87CEEB, 200, 800);
+            scene.background = new THREE.Color(0x38bdf8); // Vibrant Sky Blue
+            scene.fog = new THREE.FogExp2(0x38bdf8, 0.0012);
 
-            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 2000);
             
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
             document.body.appendChild(renderer.domElement);
             renderer.domElement.id = "gameCanvas";
 
             // Lighting
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
             scene.add(ambientLight);
+
+            const hemiLight = new THREE.HemisphereLight(0x7dd3fc, 0x15803d, 0.4);
+            scene.add(hemiLight);
             
-            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-            dirLight.position.set(100, 200, 50);
+            const dirLight = new THREE.DirectionalLight(0xfff7ed, 0.9);
+            dirLight.position.set(200, 350, 150);
             dirLight.castShadow = true;
-            dirLight.shadow.camera.left = -200;
-            dirLight.shadow.camera.right = 200;
-            dirLight.shadow.camera.top = 200;
-            dirLight.shadow.camera.bottom = -200;
+            dirLight.shadow.camera.left = -400;
+            dirLight.shadow.camera.right = 400;
+            dirLight.shadow.camera.top = 400;
+            dirLight.shadow.camera.bottom = -400;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
             scene.add(dirLight);
 
             // Ground plane (Grass)
-            const groundGeo = new THREE.PlaneGeometry(2000, 2000);
-            const groundMat = new THREE.MeshLambertMaterial({ color: 0x4ade80 }); // Tailwind green-400
+            const groundGeo = new THREE.PlaneGeometry(3500, 3500);
+            const groundMat = new THREE.MeshLambertMaterial({ color: 0x22c55e }); // Rich grass green
             const ground = new THREE.Mesh(groundGeo, groundMat);
             ground.rotation.x = -Math.PI / 2;
             ground.receiveShadow = true;
@@ -680,6 +728,7 @@
         let currentMapPoints = [];
         let checkpoints = [];
         let collisionPoints = [];
+        let barrierCollisionPoints = [];
         let trackPathCurve = null;
 
         function createRoadTexture() {
@@ -725,11 +774,15 @@
         }
 
         function build3DTrack(mapIndex) {
-            // Cleanup old track
+            // Cleanup old track & scenery
             trackMeshes.forEach(m => scene.remove(m));
             trackMeshes = [];
+            sceneryMeshes.forEach(m => scene.remove(m));
+            sceneryMeshes = [];
+            animatedScenery = [];
             items3D.forEach(i => scene.remove(i.mesh));
             items3D = [];
+            if (navArrowMesh) { scene.remove(navArrowMesh); navArrowMesh = null; }
             
             const rawPoints = maps[mapIndex].points;
             currentMapPoints = rawPoints.map(p => new THREE.Vector3((p[0]-1000)*MAP_SCALE, 0, (p[1]-750)*MAP_SCALE));
@@ -751,44 +804,8 @@
             scene.add(roadMesh);
             trackMeshes.push(roadMesh);
 
-            // Calculate offset curves for inner and outer walls
-            const leftPoints = [];
-            const rightPoints = [];
-            const segments = 200;
-            for(let i=0; i<=segments; i++) {
-                const t = i/segments;
-                const pt = trackPathCurve.getPointAt(t);
-                const tan = trackPathCurve.getTangentAt(t);
-                const norm = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
-                
-                leftPoints.push(pt.clone().add(norm.clone().multiplyScalar(ROAD_WIDTH/2 + 1)));
-                rightPoints.push(pt.clone().add(norm.clone().multiplyScalar(-ROAD_WIDTH/2 - 1)));
-            }
-            
-            const leftCurve = new THREE.CatmullRomCurve3(leftPoints, true);
-            const rightCurve = new THREE.CatmullRomCurve3(rightPoints, true);
-            const barrierMat = new THREE.MeshLambertMaterial({ map: createBarrierTexture() });
-            
-            // Generate Outer Wall Fence
-            const leftWallGeo = new THREE.TubeGeometry(leftCurve, 200, 1.5, 8, true);
-            const leftWallMesh = new THREE.Mesh(leftWallGeo, barrierMat);
-            leftWallMesh.position.y = 2; // Raise above ground
-            leftWallMesh.scale.set(1, 4, 1); // Make it tall
-            leftWallMesh.castShadow = true;
-            scene.add(leftWallMesh);
-            trackMeshes.push(leftWallMesh);
-
-            // Generate Inner Wall Fence
-            const rightWallGeo = new THREE.TubeGeometry(rightCurve, 200, 1.5, 8, true);
-            const rightWallMesh = new THREE.Mesh(rightWallGeo, barrierMat);
-            rightWallMesh.position.y = 2;
-            rightWallMesh.scale.set(1, 4, 1);
-            rightWallMesh.castShadow = true;
-            scene.add(rightWallMesh);
-            trackMeshes.push(rightWallMesh);
-
-            // Add detailed center dashed line
-            const dashGeo = new THREE.PlaneGeometry(1, 6);
+            // Add detailed center dashed line & directional chevrons
+            const dashGeo = new THREE.PlaneGeometry(1.2, 6);
             const dashMat = new THREE.MeshBasicMaterial({color: 0xffffff});
             const dashCount = 150;
             for(let i=0; i<dashCount; i++) {
@@ -800,13 +817,125 @@
                 mesh.rotateX(-Math.PI/2);
                 scene.add(mesh);
                 trackMeshes.push(mesh);
+
+                // Add navigation chevrons every 10 steps
+                if (i % 10 === 0) {
+                    const chevGroup = new THREE.Group();
+                    const chevMat = new THREE.MeshBasicMaterial({ color: 0x10b981, side: THREE.DoubleSide });
+                    const wing1 = new THREE.Mesh(new THREE.PlaneGeometry(2, 12), chevMat);
+                    wing1.position.set(-3, 0.25, -2);
+                    wing1.rotation.z = Math.PI / 4;
+                    chevGroup.add(wing1);
+
+                    const wing2 = new THREE.Mesh(new THREE.PlaneGeometry(2, 12), chevMat);
+                    wing2.position.set(3, 0.25, -2);
+                    wing2.rotation.z = -Math.PI / 4;
+                    chevGroup.add(wing2);
+
+                    chevGroup.position.set(pt.x, 0.25, pt.z);
+                    chevGroup.lookAt(pt.clone().add(tan));
+                    chevGroup.rotateX(-Math.PI / 2);
+                    scene.add(chevGroup);
+                    trackMeshes.push(chevGroup);
+                }
             }
+
+            // Create Floating 3D Waypoint Navigator Arrow above car
+            const arrowGroup = new THREE.Group();
+            const arrowConeGeo = new THREE.ConeGeometry(3.5, 8, 8);
+            const arrowConeMat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+            const arrowCone = new THREE.Mesh(arrowConeGeo, arrowConeMat);
+            arrowCone.rotation.x = Math.PI / 2; // Point forward
+            arrowGroup.add(arrowCone);
+
+            const arrowShaftGeo = new THREE.CylinderGeometry(1.2, 1.2, 6, 8);
+            const arrowShaft = new THREE.Mesh(arrowShaftGeo, arrowConeMat);
+            arrowShaft.position.z = -4;
+            arrowShaft.rotation.x = Math.PI / 2;
+            arrowGroup.add(arrowShaft);
+
+            navArrowMesh = arrowGroup;
+            scene.add(navArrowMesh);
 
             // Generate checkpoints and high-density collision points
             checkpoints = [];
             collisionPoints = []; 
+            barrierCollisionPoints = [];
             for(let i=0; i<100; i++) checkpoints.push(trackPathCurve.getPointAt(i/100));
             for(let i=0; i<250; i++) collisionPoints.push(trackPathCurve.getPointAt(i/250));
+
+            // Generate Smart Outer Barriers (Fences)
+            const wallGeo = new THREE.BoxGeometry(4, 10, 16);
+            const wallMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+            const wallInstanced = new THREE.InstancedMesh(wallGeo, wallMat, 2000);
+            wallInstanced.castShadow = true;
+            wallInstanced.receiveShadow = true;
+            
+            const colorRed = new THREE.Color(0xef4444);
+            const colorWhite = new THREE.Color(0xffffff);
+            let wallCount = 0;
+            const dummy = new THREE.Object3D();
+            
+            // Check to prevent fences from spawning inside or across asphalt road surfaces
+            const isValidBarrier = (pt, originT) => {
+                const sampleCount = 300;
+                // If point is closer than half-road-width + buffer (55 units) to any other track segment,
+                // it is sitting on or blocking a black road surface.
+                const minSafeDistSq = (ROAD_WIDTH / 2 + 5) * (ROAD_WIDTH / 2 + 5);
+                for (let j = 0; j < sampleCount; j++) {
+                    let t_other = j / sampleCount;
+                    let paramDist = Math.min(Math.abs(originT - t_other), 1 - Math.abs(originT - t_other));
+                    if (paramDist > 0.05) { 
+                        let otherPt = trackPathCurve.getPointAt(t_other);
+                        let dx = pt.x - otherPt.x;
+                        let dz = pt.z - otherPt.z;
+                        if ((dx * dx + dz * dz) < minSafeDistSq) { 
+                            return false; 
+                        }
+                    }
+                }
+                return true;
+            };
+
+            const steps = 800;
+            for(let i=0; i<steps; i++) {
+                if (wallCount >= 1998) break;
+                let t = i/steps;
+                let pt = trackPathCurve.getPointAt(t);
+                let tan = trackPathCurve.getTangentAt(t);
+                let norm = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+                
+                // Left Barrier
+                let leftPt = pt.clone().add(norm.clone().multiplyScalar(ROAD_WIDTH/2 + 2));
+                leftPt.y = 3;
+                if (isValidBarrier(leftPt, t)) {
+                    dummy.position.copy(leftPt);
+                    dummy.lookAt(leftPt.clone().add(tan));
+                    dummy.updateMatrix();
+                    wallInstanced.setMatrixAt(wallCount, dummy.matrix);
+                    wallInstanced.setColorAt(wallCount, (i % 2 === 0) ? colorRed : colorWhite);
+                    barrierCollisionPoints.push({ x: leftPt.x, z: leftPt.z });
+                    wallCount++;
+                }
+                
+                // Right Barrier
+                let rightPt = pt.clone().add(norm.clone().multiplyScalar(-ROAD_WIDTH/2 - 2));
+                rightPt.y = 3;
+                if (isValidBarrier(rightPt, t)) {
+                    dummy.position.copy(rightPt);
+                    dummy.lookAt(rightPt.clone().add(tan));
+                    dummy.updateMatrix();
+                    wallInstanced.setMatrixAt(wallCount, dummy.matrix);
+                    wallInstanced.setColorAt(wallCount, (i % 2 === 0) ? colorRed : colorWhite);
+                    barrierCollisionPoints.push({ x: rightPt.x, z: rightPt.z });
+                    wallCount++;
+                }
+            }
+            wallInstanced.count = wallCount;
+            wallInstanced.instanceMatrix.needsUpdate = true;
+            if (wallInstanced.instanceColor) wallInstanced.instanceColor.needsUpdate = true;
+            scene.add(wallInstanced);
+            trackMeshes.push(wallInstanced);
 
             // Start line
             const startPt = checkpoints[0];
@@ -821,92 +950,376 @@
             scene.add(startMesh);
             trackMeshes.push(startMesh);
 
+            // Finish Line Archway
+            buildFinishArch(startPt, startTangent);
+
+            // Build Scenery (Mountains, Trees, Towers, Clouds, Hot Air Balloons)
+            buildEnvironmentScenery();
+
             // Item Boxes
             spawnItemBoxes();
         }
 
-        function spawnItemBoxes() {
-            // Place at 30% and 70% along track
-            const p1 = trackPathCurve.getPointAt(0.3);
-            const p2 = trackPathCurve.getPointAt(0.7);
-            
-            [p1, p2].forEach(p => {
-                const geo = new THREE.BoxGeometry(10, 10, 10);
-                const mat = new THREE.MeshLambertMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.8 });
-                const mesh = new THREE.Mesh(geo, mat);
-                mesh.position.set(p.x, 5, p.z);
-                mesh.castShadow = true;
-                scene.add(mesh);
-                
-                // Inner question mark approximation (smaller darker box)
-                const innerGeo = new THREE.BoxGeometry(5,5,5);
-                const innerMat = new THREE.MeshBasicMaterial({color: 0xff0000});
-                const innerMesh = new THREE.Mesh(innerGeo, innerMat);
-                mesh.add(innerMesh);
+        function buildFinishArch(pos, tangent) {
+            const archGroup = new THREE.Group();
+            const norm = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
 
-                items3D.push({ mesh: mesh, active: true, respawnTime: 0, x: p.x, z: p.z });
-            });
+            // Left & Right Pillars
+            const pillarGeo = new THREE.BoxGeometry(6, 30, 6);
+            const pillarMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
+            const leftPillar = new THREE.Mesh(pillarGeo, pillarMat);
+            leftPillar.position.copy(pos).add(norm.clone().multiplyScalar(ROAD_WIDTH/2 + 5));
+            leftPillar.position.y = 15;
+            leftPillar.castShadow = true;
+            archGroup.add(leftPillar);
+
+            const rightPillar = new THREE.Mesh(pillarGeo, pillarMat);
+            rightPillar.position.copy(pos).add(norm.clone().multiplyScalar(-ROAD_WIDTH/2 - 5));
+            rightPillar.position.y = 15;
+            rightPillar.castShadow = true;
+            archGroup.add(rightPillar);
+
+            // Top Header Beam
+            const beamGeo = new THREE.BoxGeometry(ROAD_WIDTH + 18, 8, 8);
+            const beamMat = new THREE.MeshLambertMaterial({ color: 0xef4444 });
+            const beam = new THREE.Mesh(beamGeo, beamMat);
+            beam.position.copy(pos);
+            beam.position.y = 28;
+            beam.lookAt(pos.clone().add(tangent));
+            beam.rotateY(Math.PI / 2);
+            beam.castShadow = true;
+            archGroup.add(beam);
+
+            scene.add(archGroup);
+            sceneryMeshes.push(archGroup);
         }
 
-        function createCarMesh(colorHex) {
-            const group = new THREE.Group();
+        function isTooCloseToTrack(x, z, safeMargin) {
+            if (!trackPathCurve) return false;
+            const minSq = safeMargin * safeMargin;
+            for(let i = 0; i <= 1000; i++) {
+                const pt = trackPathCurve.getPointAt(i / 1000);
+                const dx = x - pt.x;
+                const dz = z - pt.z;
+                if ((dx*dx + dz*dz) < minSq) return true;
+            }
+            return false;
+        }
+
+        function buildEnvironmentScenery() {
+            // 1. Distant Snow-Capped Mountain Ring
+            const numMountains = 24;
+            const mountainRadius = 1100;
+            for (let i = 0; i < numMountains; i++) {
+                const angle = (i / numMountains) * Math.PI * 2 + (Math.random() * 0.1);
+                const x = Math.cos(angle) * mountainRadius;
+                const z = Math.sin(angle) * mountainRadius;
+                const height = 180 + Math.random() * 120;
+                const radius = 120 + Math.random() * 60;
+
+                const mntGroup = new THREE.Group();
+                // Base Rock
+                const baseGeo = new THREE.ConeGeometry(radius, height, 7);
+                const baseMat = new THREE.MeshLambertMaterial({ color: 0x475569, flatShading: true });
+                const base = new THREE.Mesh(baseGeo, baseMat);
+                base.position.set(x, height / 2, z);
+                mntGroup.add(base);
+
+                // Snow Cap
+                const snowGeo = new THREE.ConeGeometry(radius * 0.35, height * 0.35, 7);
+                const snowMat = new THREE.MeshLambertMaterial({ color: 0xf8fafc, flatShading: true });
+                const snow = new THREE.Mesh(snowGeo, snowMat);
+                snow.position.set(x, height * 0.825, z);
+                mntGroup.add(snow);
+
+                scene.add(mntGroup);
+                sceneryMeshes.push(mntGroup);
+            }
+
+            // 2. Watchtowers & Spectator Stands
+            for (let i = 0; i < 6; i++) {
+                let tx, tz, valid = false;
+                for(let tries=0; tries<20; tries++) {
+                    tx = (Math.random() - 0.5) * 1600;
+                    tz = (Math.random() - 0.5) * 1600;
+                    if (!isTooCloseToTrack(tx, tz, ROAD_WIDTH/2 + 40)) {
+                        valid = true; break;
+                    }
+                }
+                if (!valid) continue;
+
+                const towerGroup = new THREE.Group();
+                const bodyGeo = new THREE.CylinderGeometry(12, 16, 50, 8);
+                const bodyMat = new THREE.MeshLambertMaterial({ color: 0x94a3b8, flatShading: true });
+                const body = new THREE.Mesh(bodyGeo, bodyMat);
+                body.position.set(tx, 25, tz);
+                towerGroup.add(body);
+
+                const roofGeo = new THREE.ConeGeometry(20, 20, 8);
+                const roofMat = new THREE.MeshLambertMaterial({ color: 0xb91c1c });
+                const roof = new THREE.Mesh(roofGeo, roofMat);
+                roof.position.set(tx, 60, tz);
+                towerGroup.add(roof);
+
+                scene.add(towerGroup);
+                sceneryMeshes.push(towerGroup);
+            }
+
+            // 3. Floating Clouds & Hot Air Balloons
+            for (let i = 0; i < 15; i++) {
+                const cx = (Math.random() - 0.5) * 1600;
+                const cz = (Math.random() - 0.5) * 1600;
+                const cy = 120 + Math.random() * 80;
+
+                const cloudGroup = new THREE.Group();
+                const cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, flatShading: true });
+                
+                for (let b = 0; b < 5; b++) {
+                    const blobGeo = new THREE.DodecahedronGeometry(15 + Math.random() * 12);
+                    const blob = new THREE.Mesh(blobGeo, cloudMat);
+                    blob.position.set((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 30);
+                    cloudGroup.add(blob);
+                }
+                cloudGroup.position.set(cx, cy, cz);
+                scene.add(cloudGroup);
+                sceneryMeshes.push(cloudGroup);
+            }
+
+            // 4. Hot Air Balloons
+            for (let b = 0; b < 3; b++) {
+                const bx = (Math.random() - 0.5) * 1200;
+                const bz = (Math.random() - 0.5) * 1200;
+                const balloonGroup = new THREE.Group();
+
+                const balloonGeo = new THREE.SphereGeometry(22, 16, 16);
+                const balloonMat = new THREE.MeshLambertMaterial({ color: b === 0 ? 0xef4444 : (b === 1 ? 0xf59e0b : 0x3b82f6) });
+                const balloon = new THREE.Mesh(balloonGeo, balloonMat);
+                balloon.position.y = 0;
+                balloonGroup.add(balloon);
+
+                const basketGeo = new THREE.BoxGeometry(6, 6, 6);
+                const basketMat = new THREE.MeshLambertMaterial({ color: 0x78350f });
+                const basket = new THREE.Mesh(basketGeo, basketMat);
+                basket.position.y = -26;
+                balloonGroup.add(basket);
+
+                balloonGroup.position.set(bx, 140 + b * 30, bz);
+                scene.add(balloonGroup);
+                sceneryMeshes.push(balloonGroup);
+                animatedScenery.push({ mesh: balloonGroup, initialY: 140 + b * 30, speed: 0.001 + b * 0.0005 });
+            }
+
+            // 5. Trees scattered on grass
+            const pineMat = new THREE.MeshLambertMaterial({ color: 0x15803d, flatShading: true });
+            const trunkMat = new THREE.MeshLambertMaterial({ color: 0x78350f });
             
-            // Body
-            const bodyGeo = new THREE.BoxGeometry(6, 3, 12);
-            const bodyMat = new THREE.MeshLambertMaterial({ color: colorHex });
+            for (let i = 0; i < 120; i++) {
+                const tx = (Math.random() - 0.5) * 1800;
+                const tz = (Math.random() - 0.5) * 1800;
+
+                if (isTooCloseToTrack(tx, tz, ROAD_WIDTH/2 + 30)) continue;
+
+                const treeGroup = new THREE.Group();
+                const trunk = new THREE.Mesh(new THREE.CylinderGeometry(2, 3, 10, 6), trunkMat);
+                trunk.position.y = 5;
+                trunk.castShadow = true;
+                treeGroup.add(trunk);
+
+                const leaves1 = new THREE.Mesh(new THREE.ConeGeometry(12, 20, 6), pineMat);
+                leaves1.position.y = 18;
+                leaves1.castShadow = true;
+                treeGroup.add(leaves1);
+
+                const leaves2 = new THREE.Mesh(new THREE.ConeGeometry(9, 16, 6), pineMat);
+                leaves2.position.y = 26;
+                leaves2.castShadow = true;
+                treeGroup.add(leaves2);
+
+                treeGroup.position.set(tx, 0, tz);
+                scene.add(treeGroup);
+                sceneryMeshes.push(treeGroup);
+            }
+        }
+
+        function spawnItemBoxes() {
+            items3D.forEach(i => scene.remove(i.mesh));
+            items3D = [];
+
+            if (!trackPathCurve) return;
+
+            const numItemSets = 8;
+            const boxGeo = new THREE.BoxGeometry(6, 6, 6);
+            const boxMat = new THREE.MeshLambertMaterial({ 
+                color: 0xf59e0b, 
+                transparent: true, 
+                opacity: 0.85 
+            });
+
+            for (let s = 1; s <= numItemSets; s++) {
+                const t = s / (numItemSets + 1);
+                const pt = trackPathCurve.getPointAt(t);
+                const tan = trackPathCurve.getTangentAt(t);
+                const norm = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+
+                [-20, 0, 20].forEach(offset => {
+                    const pos = pt.clone().add(norm.clone().multiplyScalar(offset));
+                    pos.y = 4;
+
+                    const boxMesh = new THREE.Mesh(boxGeo, boxMat);
+                    boxMesh.position.copy(pos);
+                    boxMesh.castShadow = true;
+
+                    const glowGeo = new THREE.BoxGeometry(3, 3, 3);
+                    const glowMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+                    const glow = new THREE.Mesh(glowGeo, glowMat);
+                    boxMesh.add(glow);
+
+                    scene.add(boxMesh);
+                    items3D.push({
+                        x: pos.x,
+                        z: pos.z,
+                        mesh: boxMesh,
+                        active: true
+                    });
+                });
+            }
+        }
+
+        function createCarMesh(color) {
+            const carGroup = new THREE.Group();
+
+            // Main Body
+            const bodyGeo = new THREE.BoxGeometry(10, 5, 18);
+            const bodyMat = new THREE.MeshLambertMaterial({ color: color || 0x3b82f6 });
             const body = new THREE.Mesh(bodyGeo, bodyMat);
-            body.position.y = 2.0;
+            body.position.y = 2.5;
             body.castShadow = true;
-            group.add(body);
-            
+            carGroup.add(body);
+
+            // Front Nose
+            const noseGeo = new THREE.BoxGeometry(8, 3, 6);
+            const nose = new THREE.Mesh(noseGeo, bodyMat);
+            nose.position.set(0, 2, 10);
+            nose.castShadow = true;
+            carGroup.add(nose);
+
             // Cockpit
-            const topGeo = new THREE.BoxGeometry(4.5, 2.2, 6);
-            const topMat = new THREE.MeshLambertMaterial({ color: 0x1e293b }); // dark window
-            const top = new THREE.Mesh(topGeo, topMat);
-            top.position.set(0, 4.5, -1.5);
-            top.castShadow = true;
-            group.add(top);
+            const cabinGeo = new THREE.BoxGeometry(7, 4, 8);
+            const cabinMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
+            const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+            cabin.position.set(0, 5.5, -1);
+            cabin.castShadow = true;
+            carGroup.add(cabin);
+
+            // Driver Helmet
+            const headGeo = new THREE.SphereGeometry(2, 12, 12);
+            const headMat = new THREE.MeshLambertMaterial({ color: 0xf8fafc });
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.set(0, 8, -1);
+            head.castShadow = true;
+            carGroup.add(head);
+
+            // Visor
+            const visorGeo = new THREE.BoxGeometry(2.2, 1, 1.2);
+            const visorMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+            const visor = new THREE.Mesh(visorGeo, visorMat);
+            visor.position.set(0, 8.2, 0.8);
+            carGroup.add(visor);
+
+            // Spoiler
+            const spoilerWingGeo = new THREE.BoxGeometry(12, 1, 4);
+            const spoilerMat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+            const spoilerWing = new THREE.Mesh(spoilerWingGeo, spoilerMat);
+            spoilerWing.position.set(0, 7.5, -8);
+            spoilerWing.castShadow = true;
+            carGroup.add(spoilerWing);
+
+            const spoilerLegGeo = new THREE.BoxGeometry(1, 3, 1);
+            const leg1 = new THREE.Mesh(spoilerLegGeo, spoilerMat);
+            leg1.position.set(-3.5, 5.5, -8);
+            carGroup.add(leg1);
+            const leg2 = new THREE.Mesh(spoilerLegGeo, spoilerMat);
+            leg2.position.set(3.5, 5.5, -8);
+            carGroup.add(leg2);
 
             // Wheels
-            const wheelGeo = new THREE.CylinderGeometry(1.5, 1.5, 1.5, 8);
-            const wheelMat = new THREE.MeshLambertMaterial({color: 0x000000});
-            const positions = [
-                [-3.75, 1.5, 4.5], [3.75, 1.5, 4.5], [-3.75, 1.5, -4.5], [3.75, 1.5, -4.5]
+            const wheelGeo = new THREE.CylinderGeometry(2.5, 2.5, 2, 16);
+            const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+            const rimGeo = new THREE.CylinderGeometry(1.2, 1.2, 2.1, 8);
+            const rimMat = new THREE.MeshBasicMaterial({ color: 0xd1d5db });
+
+            const wheelPositions = [
+                { x: -5.5, y: 2.5, z: 6 },
+                { x: 5.5, y: 2.5, z: 6 },
+                { x: -5.5, y: 2.5, z: -6 },
+                { x: 5.5, y: 2.5, z: -6 }
             ];
-            positions.forEach(pos => {
-                const wheel = new THREE.Mesh(wheelGeo, wheelMat);
-                wheel.rotation.z = Math.PI/2;
-                wheel.position.set(...pos);
-                wheel.castShadow = true;
-                group.add(wheel);
+
+            wheelPositions.forEach(pos => {
+                const wheelGroup = new THREE.Group();
+                const tire = new THREE.Mesh(wheelGeo, wheelMat);
+                tire.rotation.z = Math.PI / 2;
+                tire.castShadow = true;
+                wheelGroup.add(tire);
+
+                const rim = new THREE.Mesh(rimGeo, rimMat);
+                rim.rotation.z = Math.PI / 2;
+                wheelGroup.add(rim);
+
+                wheelGroup.position.set(pos.x, pos.y, pos.z);
+                carGroup.add(wheelGroup);
             });
 
-            return group;
-        }
+            // Headlights & Taillights
+            const lightGeo = new THREE.BoxGeometry(1.5, 1, 0.5);
+            const lightMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+            const leftLight = new THREE.Mesh(lightGeo, lightMat);
+            leftLight.position.set(-3, 2.5, 12.8);
+            carGroup.add(leftLight);
 
-        function removePlayerMesh(id) {
-            if(playerMeshes[id]) {
-                scene.remove(playerMeshes[id].mesh);
-                delete playerMeshes[id];
-            }
+            const rightLight = new THREE.Mesh(lightGeo, lightMat);
+            rightLight.position.set(3, 2.5, 12.8);
+            carGroup.add(rightLight);
+
+            const tailLightMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+            const leftTail = new THREE.Mesh(lightGeo, tailLightMat);
+            leftTail.position.set(-3.5, 3.5, -9);
+            carGroup.add(leftTail);
+
+            const rightTail = new THREE.Mesh(lightGeo, tailLightMat);
+            rightTail.position.set(3.5, 3.5, -9);
+            carGroup.add(rightTail);
+
+            // Shield Bubble
+            const shieldGeo = new THREE.SphereGeometry(14, 16, 16);
+            const shieldMat = new THREE.MeshLambertMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.4 });
+            const shieldSphere = new THREE.Mesh(shieldGeo, shieldMat);
+            shieldSphere.position.y = 5;
+            shieldSphere.name = "shield";
+            shieldSphere.visible = false;
+            carGroup.add(shieldSphere);
+
+            return carGroup;
         }
 
         // Local Player Physics
         const physics = {
             speed: 0, maxSpeed: 3.6, accel: 0.15, friction: 0.96, turnSpeed: 0.05,
             velocity: new THREE.Vector3(),
-            item: null, boostEndTime: 0, stunEndTime: 0
+            item: null, boostEndTime: 0, rocketEndTime: 0, stunEndTime: 0
         };
         const keys = { w: false, a: false, s: false, d: false, space: false };
 
-        const itemsList = ['🍄', '🍌', '⚡', '⭐', '💣'];
+        const itemsList = ['🍄', '🍌', '⚡', '⭐', '💣', '🛡️', '💧', '🚀', '👻', '🧊', '🧱', '💊'];
         let localLightningRecord = 0;
+        const consumedTraps = new Set();
 
         function resetLocalPhysics() {
             const myState = gameState.players[myId];
             if(!myState || !trackPathCurve) return;
 
             spectatingId = null; // 관전 초기화
+            consumedTraps.clear();
 
             // Start positions based on ID
             const startPt = trackPathCurve.getPointAt(0);
@@ -934,10 +1347,16 @@
             myState.lap = 1; myState.cp = 1; // start looking for CP 1
             myState.finished = false; myState.finishTime = 0;
             myState.traps = [];
+            myState.hasShield = false;
+            myState.shieldEndTime = 0;
+            myState.starEndTime = 0;
+            myState.ghostEndTime = 0;
             
             physics.speed = 0;
             physics.item = null;
             physics.stunEndTime = 0;
+            physics.boostEndTime = 0;
+            physics.rocketEndTime = 0;
             
             updateHud();
         }
@@ -952,6 +1371,13 @@
             if (itm === '🍄') {
                 physics.boostEndTime = Date.now() + 3500;
                 showMessage("MEGA BOOST!");
+            } else if (itm === '🚀') {
+                physics.rocketEndTime = Date.now() + 6000;
+                showMessage("ROCKET BOOST!");
+            } else if (itm === '🛡️') {
+                gameState.players[myId].hasShield = true;
+                gameState.players[myId].shieldEndTime = Date.now() + 60000;
+                showMessage("SHIELD ACTIVE!");
             } else if (itm === '🍌') {
                 const myState = gameState.players[myId];
                 // Drop cluster of 3
@@ -962,17 +1388,52 @@
                 myState.traps.push({ type: 'banana', x: bx - 10, z: bz + 5, id: Date.now()+2 });
                 showMessage("BANANA BUNCH!");
             } else if (itm === '⚡') {
-                sendAction('lightning');
+                if (isHost) {
+                    const now = Date.now();
+                    Object.keys(gameState.players).forEach(pid => {
+                        if (pid !== myId) {
+                            gameState.players[pid].lightningTrigger = now;
+                        }
+                    });
+                    broadcastState();
+                } else {
+                    sendAction('lightning');
+                }
                 showMessage("LIGHTNING STRIKE!");
             } else if (itm === '⭐') {
                 gameState.players[myId].starEndTime = Date.now() + 8000;
                 showMessage("STAR POWER!");
+            } else if (itm === '💧') {
+                const myState = gameState.players[myId];
+                const bx = myState.x - Math.sin(myState.rotationY) * 20;
+                const bz = myState.z - Math.cos(myState.rotationY) * 20;
+                myState.traps.push({ type: 'oil', x: bx, z: bz, id: Date.now() });
+                showMessage("OIL SPILL!");
             } else if (itm === '💣') {
                 const myState = gameState.players[myId];
                 const bx = myState.x - Math.sin(myState.rotationY) * 20;
                 const bz = myState.z - Math.cos(myState.rotationY) * 20;
                 myState.traps.push({ type: 'bomb', x: bx, z: bz, id: Date.now() });
                 showMessage("BOMB DROPPED!");
+            } else if (itm === '👻') {
+                gameState.players[myId].ghostEndTime = Date.now() + 6000;
+                showMessage("GHOST MODE!");
+            } else if (itm === '💊') {
+                physics.boostEndTime = Date.now() + 2000;
+                physics.speed = physics.maxSpeed * 1.8;
+                showMessage("SPEED PILL!");
+            } else if (itm === '🧊') {
+                const myState = gameState.players[myId];
+                const bx = myState.x - Math.sin(myState.rotationY) * 20;
+                const bz = myState.z - Math.cos(myState.rotationY) * 20;
+                myState.traps.push({ type: 'ice', x: bx, z: bz, id: Date.now() });
+                showMessage("ICE BLOCK!");
+            } else if (itm === '🧱') {
+                const myState = gameState.players[myId];
+                const bx = myState.x - Math.sin(myState.rotationY) * 25;
+                const bz = myState.z - Math.cos(myState.rotationY) * 25;
+                myState.traps.push({ type: 'wall', x: bx, z: bz, id: Date.now(), rot: myState.rotationY });
+                showMessage("BRICK WALL!");
             }
         }
 
@@ -996,10 +1457,17 @@
         function triggerLightningEffect() {
             const myState = gameState.players[myId];
             const isStar = (myState && myState.starEndTime && Date.now() < myState.starEndTime);
+            const isShield = (myState && (myState.hasShield || (myState.shieldEndTime && Date.now() < myState.shieldEndTime)));
             
             if (isStar) {
                 showMessage("⭐ BLOCKED LIGHTNING!");
                 return; // Immune
+            }
+            if (isShield) {
+                myState.hasShield = false;
+                myState.shieldEndTime = 0; // Consume single-use shield
+                showMessage("🛡️ SHIELD ABSORBED LIGHTNING!");
+                return; 
             }
 
             const flash = document.getElementById('flashOverlay');
@@ -1020,15 +1488,17 @@
             if (!myState || gameState.status !== 'racing' || myState.finished) return;
 
             const isStar = (myState.starEndTime && Date.now() < myState.starEndTime);
+            const isShield = (myState.shieldEndTime && Date.now() < myState.shieldEndTime);
+            const isGhost = (myState.ghostEndTime && Date.now() < myState.ghostEndTime);
+
+            let currentMaxSpeed = physics.maxSpeed;
+            if (Date.now() < physics.boostEndTime) currentMaxSpeed = physics.maxSpeed * 1.8;
+            else if (Date.now() < physics.rocketEndTime) currentMaxSpeed = physics.maxSpeed * 2.5;
 
             // Stun effect (번개나 바나나에 맞았을 때)
             if (!isStar && Date.now() < physics.stunEndTime) {
                 physics.speed *= 0.8; 
             } else {
-                let currentMaxSpeed = physics.maxSpeed;
-                if (Date.now() < physics.boostEndTime) currentMaxSpeed *= 1.8;
-                if (isStar) currentMaxSpeed *= 2.2;
-
                 // Acceleration
                 if (keys.w) physics.speed += physics.accel;
                 if (keys.s) physics.speed -= physics.accel;
@@ -1043,7 +1513,7 @@
 
             // Friction and Limits
             physics.speed *= physics.friction;
-            physics.speed = Math.max(-physics.maxSpeed/2, Math.min(physics.speed, physics.maxSpeed * (Date.now() < physics.boostEndTime ? 1.5 : 1)));
+            physics.speed = Math.max(-currentMaxSpeed/2, Math.min(physics.speed, currentMaxSpeed));
 
             if (Math.abs(physics.speed) < 0.01) physics.speed = 0;
 
@@ -1052,59 +1522,46 @@
 
             // Player-to-Player Collision
             const carRadiusSq = 14 * 14; // Approximate bounding circle radius for cars
-            Object.values(gameState.players).forEach(p => {
-                if (p.id !== myId && !p.finished) {
-                    const dx = nextX - p.x;
-                    const dz = nextZ - p.z;
-                    const distSq = dx*dx + dz*dz;
-                    if (distSq < carRadiusSq && distSq > 0.01) {
-                        const dist = Math.sqrt(distSq);
-                        const overlap = 14 - dist;
-                        // Bounce/Push away naturally
-                        nextX += (dx / dist) * overlap * 0.5;
-                        nextZ += (dz / dist) * overlap * 0.5;
-                        physics.speed *= 0.90; // Lose speed on impact
+            if (!isGhost) {
+                Object.values(gameState.players).forEach(p => {
+                    if (p.id !== myId && !p.finished) {
+                        const otherGhost = (p.ghostEndTime && Date.now() < p.ghostEndTime);
+                        if (otherGhost) return;
+                        
+                        const dx = nextX - p.x;
+                        const dz = nextZ - p.z;
+                        const distSq = dx*dx + dz*dz;
+                        if (distSq < carRadiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const overlap = 14 - dist;
+                            // Bounce/Push away naturally
+                            nextX += (dx / dist) * overlap * 0.5;
+                            nextZ += (dz / dist) * overlap * 0.5;
+                            physics.speed *= 0.90; // Lose speed on impact
+                        }
                     }
+                });
+            }
+
+            // Barrier Collision (Smart fences)
+            const barrierRadiusSq = 12 * 12;
+            for(let i=0; i<barrierCollisionPoints.length; i++) {
+                const bpt = barrierCollisionPoints[i];
+                const dx = nextX - bpt.x;
+                const dz = nextZ - bpt.z;
+                const distSq = dx*dx + dz*dz;
+                if (distSq < barrierRadiusSq) {
+                    const dist = Math.sqrt(distSq);
+                    const overlap = 12 - dist;
+                    nextX += (dx / dist) * overlap;
+                    nextZ += (dz / dist) * overlap;
+                    physics.speed *= 0.85; // Lose speed on wall hit
                 }
-            });
-
-            // Boundary/Fence Collision using continuous segment check (Detailed Hitbox)
-            let isOutOfBounds = true;
-            let minDistSq = Infinity;
-            
-            if (collisionPoints.length > 0) {
-                for(let i = 0; i < collisionPoints.length; i++) {
-                    const v = collisionPoints[i];
-                    const w = collisionPoints[(i + 1) % collisionPoints.length];
-                    
-                    // Math for closest distance from point to line segment
-                    const l2 = (v.x - w.x)*(v.x - w.x) + (v.z - w.z)*(v.z - w.z);
-                    let dSq;
-                    if (l2 === 0) {
-                        dSq = (nextX - v.x)*(nextX - v.x) + (nextZ - v.z)*(nextZ - v.z);
-                    } else {
-                        let t = ((nextX - v.x) * (w.x - v.x) + (nextZ - v.z) * (w.z - v.z)) / l2;
-                        t = Math.max(0, Math.min(1, t)); // clamp to line segment points
-                        const projX = v.x + t * (w.x - v.x);
-                        const projZ = v.z + t * (w.z - v.z);
-                        dSq = (nextX - projX)*(nextX - projX) + (nextZ - projZ)*(nextZ - projZ);
-                    }
-                    if (dSq < minDistSq) minDistSq = dSq;
-                }
-            } else {
-                isOutOfBounds = false; // Failsafe
             }
 
-            if (minDistSq < (ROAD_WIDTH/2 - 5) * (ROAD_WIDTH/2 - 5)) {
-                isOutOfBounds = false;
-            }
-
-            if (isOutOfBounds) {
-                physics.speed *= -0.4; // Bounce off the wall
-            } else {
-                myState.x = nextX;
-                myState.z = nextZ;
-            }
+            // Apply movement
+            myState.x = nextX;
+            myState.z = nextZ;
 
             // Checkpoints & Laps
             if (checkpoints.length > 0) {
@@ -1152,27 +1609,57 @@
             }
 
             // Banana/Bomb Traps Collision
-            Object.values(gameState.players).forEach(p => {
+            Object.entries(gameState.players).forEach(([ownerId, p]) => {
                 if (p.traps) {
                     for (let i = p.traps.length - 1; i >= 0; i--) {
                         const trap = p.traps[i];
-                        // 자기가 방금 놓은 폭탄/바나나에는 즉시 닿지 않게 유예 시간 부여
+                        if (consumedTraps.has(trap.id)) continue;
                         if (p.id === myId && Date.now() - trap.id < 1500) continue; 
                         
-                        const trapRadiusSq = trap.type === 'bomb' ? 6400 : 2401; // 80^2 for Bomb, 49^2 for Banana
+                        let trapRadiusSq = 2401; // default banana
+                        if (trap.type === 'bomb') trapRadiusSq = 6400;
+                        else if (trap.type === 'oil') trapRadiusSq = 3600;
+                        else if (trap.type === 'wall') trapRadiusSq = 5000;
+                        else if (trap.type === 'ice') trapRadiusSq = 2500;
+                        
                         const dx = myState.x - trap.x;
                         const dz = myState.z - trap.z;
                         
                         if (dx*dx + dz*dz < trapRadiusSq) { 
+                            if (isGhost) continue;
+                            
+                            consumedTraps.add(trap.id);
                             p.traps.splice(i, 1); // 닿은 트랩 소멸
                             
+                            // Send trap removal to host
+                            if (isHost) {
+                                broadcastState();
+                            } else if (hostConnection && hostConnection.open) {
+                                hostConnection.send({ type: 'removeTrap', ownerId: ownerId, trapId: trap.id });
+                            }
+
                             if (isStar) {
                                 showMessage("SMASHED TRAP!");
+                            } else if (isShield) {
+                                myState.hasShield = false;
+                                myState.shieldEndTime = 0; // Consume single-use shield
+                                showMessage("🛡️ SHIELD ABSORBED HIT!");
                             } else {
                                 if (trap.type === 'bomb') {
                                     physics.stunEndTime = Date.now() + 4000;
                                     physics.speed = 0;
                                     showMessage("💥 HIT A BOMB!");
+                                } else if (trap.type === 'oil') {
+                                    physics.stunEndTime = Date.now() + 2000;
+                                    physics.speed *= 0.2;
+                                    showMessage("💧 SLIPPED ON OIL!");
+                                } else if (trap.type === 'wall') {
+                                    physics.speed *= -0.5;
+                                    showMessage("🧱 HIT A WALL!");
+                                } else if (trap.type === 'ice') {
+                                    physics.stunEndTime = Date.now() + 3000;
+                                    physics.speed = 0;
+                                    showMessage("🧊 FROZEN!");
                                 } else {
                                     physics.stunEndTime = Date.now() + 2500;
                                     physics.speed = 0;
@@ -1195,6 +1682,19 @@
                 lastSyncTime = now;
             }
 
+            // Animate Hot Air Balloons & Clouds
+            animatedScenery.forEach(item => {
+                item.mesh.position.y = item.initialY + Math.sin(now * item.speed) * 15;
+                item.mesh.rotation.y += 0.002;
+            });
+
+            items3D.forEach(item => {
+                if (item.mesh && item.active) {
+                    item.mesh.rotation.y += 0.03;
+                    item.mesh.rotation.x += 0.01;
+                }
+            });
+
             // Spectator target calculation
             const myState = gameState.players[myId];
             if (gameState.status === 'racing' && myState && myState.finished) {
@@ -1204,6 +1704,35 @@
             }
 
             let camTargetId = spectatingId || myId;
+
+            // Update Navigation System (3D Waypoint Arrow & Wrong Way Warning)
+            const wrongWayEl = document.getElementById('wrongWayUI');
+            if (gameState.status === 'racing' && myState && !myState.finished && checkpoints.length > 0) {
+                const targetCP = checkpoints[myState.cp % checkpoints.length];
+                
+                if (navArrowMesh) {
+                    navArrowMesh.visible = true;
+                    // Hover above local player car
+                    navArrowMesh.position.set(myState.x, 14 + Math.sin(now * 0.005) * 1.5, myState.z);
+                    navArrowMesh.lookAt(targetCP.x, 14, targetCP.z);
+                }
+
+                // Check driving direction against track tangent
+                const nextPointIdx = myState.cp % checkpoints.length;
+                const prevPointIdx = (myState.cp - 1 + checkpoints.length) % checkpoints.length;
+                const trackDir = checkpoints[nextPointIdx].clone().sub(checkpoints[prevPointIdx]).normalize();
+                const carDir = new THREE.Vector3(Math.sin(myState.rotationY), 0, Math.cos(myState.rotationY));
+                
+                // Dot product < -0.2 means pointing backwards
+                if (carDir.dot(trackDir) < -0.2 && Math.abs(physics.speed) > 0.2) {
+                    wrongWayEl.classList.remove('hidden');
+                } else {
+                    wrongWayEl.classList.add('hidden');
+                }
+            } else {
+                if (navArrowMesh) navArrowMesh.visible = false;
+                if (wrongWayEl) wrongWayEl.classList.add('hidden');
+            }
 
             // Update meshes
             Object.values(gameState.players).forEach(p => {
@@ -1229,14 +1758,35 @@
                     m.rotation.y += diff * 0.3;
                 }
 
+                const isStar = (p.starEndTime && now < p.starEndTime);
+                const isGhost = (p.ghostEndTime && now < p.ghostEndTime);
+
+                // Apply material transparency for Ghost mode safely
+                m.traverse((child) => {
+                    if (child.isMesh && child.name !== "shield") {
+                        if (isGhost) {
+                            child.material.transparent = true;
+                            child.material.opacity = 0.3;
+                        } else {
+                            child.material.transparent = false;
+                            child.material.opacity = 1.0;
+                        }
+                    }
+                });
+
                 // Star Power Visual (Flashing & Resized)
-                if (p.starEndTime && now < p.starEndTime) {
+                if (isStar) {
                     const hue = (now % 1000) / 1000;
                     m.children[0].material.color.setHSL(hue, 1.0, 0.5); // Body Material
                     m.scale.set(1.2, 1.2, 1.2);
                 } else {
                     m.children[0].material.color.setHex(p.color);
                     m.scale.set(1, 1, 1);
+                }
+                
+                const shieldMesh = m.getObjectByName("shield");
+                if (shieldMesh) {
+                    shieldMesh.visible = !!p.hasShield || (p.shieldEndTime && now < p.shieldEndTime);
                 }
 
                 // Camera Follow Target (내 차 또는 관전 대상 차)
@@ -1282,6 +1832,12 @@
             const bananaMat = new THREE.MeshLambertMaterial({color: 0xeab308}); // yellow
             const bombGeo = new THREE.SphereGeometry(6, 16, 16);
             const bombMat = new THREE.MeshLambertMaterial({color: 0x111111}); // black
+            const oilGeo = new THREE.CylinderGeometry(14, 14, 0.5, 16);
+            const oilMat = new THREE.MeshLambertMaterial({color: 0x111111}); // black puddle
+            const iceGeo = new THREE.BoxGeometry(10, 10, 10);
+            const iceMat = new THREE.MeshLambertMaterial({color: 0x93c5fd, transparent: true, opacity: 0.8});
+            const wallGeo = new THREE.BoxGeometry(24, 12, 6);
+            const wallMat = new THREE.MeshLambertMaterial({color: 0xb91c1c}); // brick red
             
             Object.values(gameState.players).forEach(p => {
                 if(p.traps) {
@@ -1290,6 +1846,16 @@
                         if (trap.type === 'bomb') {
                             tm = new THREE.Mesh(bombGeo, bombMat);
                             tm.position.set(trap.x, 4, trap.z);
+                        } else if (trap.type === 'oil') {
+                            tm = new THREE.Mesh(oilGeo, oilMat);
+                            tm.position.set(trap.x, 0.5, trap.z);
+                        } else if (trap.type === 'ice') {
+                            tm = new THREE.Mesh(iceGeo, iceMat);
+                            tm.position.set(trap.x, 5, trap.z);
+                        } else if (trap.type === 'wall') {
+                            tm = new THREE.Mesh(wallGeo, wallMat);
+                            tm.position.set(trap.x, 6, trap.z);
+                            tm.rotation.y = trap.rot || 0;
                         } else {
                             tm = new THREE.Mesh(bananaGeo, bananaMat);
                             tm.position.set(trap.x, 2, trap.z);
@@ -1520,20 +2086,9 @@
                 if (!isHost && gameState.winner !== myId) return;
                 gameState.track = parseInt(e.target.dataset.track);
                 if(isHost) broadcastState();
-                else if(hostConnection) hostConnection.send({type: 'updateTrack', track: gameState.track}); // Simplified, host should accept this
+                else if(hostConnection) hostConnection.send({type: 'updateTrack', track: gameState.track});
             });
         });
-
-        // Add special handler for client updating track
-        // Modifying handleDataFromClient
-        const originalHandleData = handleDataFromClient;
-        handleDataFromClient = function(clientId, data) {
-            originalHandleData(clientId, data);
-            if(data.type === 'updateTrack' && (clientId === gameState.winner || isHost)) {
-                gameState.track = data.track;
-                broadcastState();
-            }
-        };
 
         document.getElementById('startBtn').addEventListener('click', () => {
             if(!isHost) return;
@@ -1554,18 +2109,6 @@
                 hostConnection.send({type: 'requestLobby'});
             }
         });
-
-        // Modifying handleDataFromClient again for next race
-        const originalHandleData2 = handleDataFromClient;
-        handleDataFromClient = function(clientId, data) {
-            originalHandleData2(clientId, data);
-            if(data.type === 'requestLobby' && clientId === gameState.winner) {
-                const oldStatus = gameState.status;
-                gameState.status = 'waiting';
-                handleStateTransitions(oldStatus, gameState.status);
-                broadcastState();
-            }
-        };
 
         window.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowUp' || e.key === 'w') keys.w = true;
